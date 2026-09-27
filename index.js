@@ -1549,6 +1549,13 @@ function registerControlRoutes(ctx) {
   }
 }
 
+/* ⚠️ 控制中心要往 DSH 自己的 web server 上注册同源路由，因此必须硬依赖 webServer。
+   声明方式必须是**模块级导出 inject**（DSH 自带插件就是这个写法）；
+   只写进 cordis.patch.yml 不够 —— 实测那样拿不到服务，路由全部 404。
+   为什么这个依赖安全：DSH 自己的 Web UI 就由 webServer 提供（fallback 座位是 SPA dist server），
+   且 dsh-web-app 始终在 profile 的 bundles 列表里，该服务在本组合中必然存在。 */
+export const inject = ['webServer'];
+
 export function apply(ctx) {
   let server = null;
 

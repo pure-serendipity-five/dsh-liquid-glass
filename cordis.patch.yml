@@ -1,8 +1,17 @@
-# dsh-liquid-glass 的 Loader 补丁。
-#
-# Host 半体（index.js）是空的 —— 本包不做任何宿主侧的事，
-# 不注册路由、不依赖 webServer，所有工作都在客户端半体（client.js）。
-# 这样能彻底避开「插件 scope 拿不到 webServer」那类问题。
 - insert:
     - id: dsh-liquid-glass
       name: '@local/dsh-liquid-glass'
+      # ⚠️ 必须声明 inject —— 否则拿不到 webServer，控制中心的同源路由不会注册，
+      #    表现就是「面板能打开但点什么都没反应」。
+      #
+      # 背景（一次真实事故）：本插件原先被 insert 在最外层，而 Cordis 的服务查找
+      # 是子→父单向的，插在外层就看不到内层提供的服务 → ctx.get('webServer')
+      # 返回 undefined。当时宿主半体是空的，所以写下「不依赖 webServer」绕开该问题。
+      # 现在宿主半体要注册 /dshlg-control/* 路由，必须显式 inject。
+      #
+      # 为什么这里注入是安全的：DSH 自己的 Web UI 就由 webServer 提供
+      # （它的 fallback 座位是 SPA dist server），且 dsh-web-app 始终在 profile 的
+      # bundles 列表里 —— 该服务在本组合中必然存在。inject 失败会导致插件不激活
+      # （本项目为此翻过两次车），所以这个依赖是经过论证的，不是随手加的。
+      inject:
+        - webServer
