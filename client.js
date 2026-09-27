@@ -3379,9 +3379,14 @@ ${glassVars(theme, modal.alpha, modal.frost, cardRefract)}
   text-shadow: ${dark
     ? '0 1px 2px rgba(0, 0, 0, 0.6)'
     : '0 1px 1px rgba(255, 255, 255, 0.55)'};
-  /* 更透：原来 0.24/0.34 偏厚，用户要「更透一些」。玻璃感交给描边 + 顶光。 */
-  /* 用户要「更透」：再降一档。玻璃边界由描边 + 顶光交代。 */
-  background: var(--dshlg-panel-veil, rgba(var(--dshlg-bar-tone), ${dark ? 0.06 : 0.08}));
+  /* ⚠️ 兜底纱必须**本身就够读**。
+     原来是 rgba(bar-tone, 0.06/0.08) —— 只有 6~8%，那是「自适应一定会写
+     --dshlg-panel-veil」时代的假设。实测：设置面板能被 adaptPanelReadability
+     写入行内变量救回来（0.78），而控制中心没有那个自适应 → 直接吃 6~8% 兜底
+     → 必然全透、字看不清（用户实测反馈）。
+     自适应成功时它写的是**行内变量**，优先级高于样式表，所以这里调高兜底
+     不影响自适应；失败时兜底值本身就够读。 */
+  background: var(--dshlg-panel-veil, ${dark ? 'rgba(20, 25, 35, 0.9)' : 'rgba(252, 253, 255, 0.92)'});
   border: 1px solid rgba(var(--dshlg-bar-tone), ${dark ? 0.55 : 0.85});
   border-radius: 16px;
   box-shadow:
