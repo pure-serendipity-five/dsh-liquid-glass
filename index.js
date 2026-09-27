@@ -173,9 +173,21 @@ function corsHeaders(source) {
   if (typeof origin === 'string' && origin) {
     if (ALLOWED_ORIGIN.test(origin)) {
       headers['Access-Control-Allow-Origin'] = origin;
-    } else if (!rejectedOrigins.has(origin)) {
-      rejectedOrigins.add(origin);
-      console.info(`[dsh-liquid-glass] 拒绝跨源来源 ${origin}（本服务只服务本机界面）`);
+    } else {
+      /* ⚠️ 这里**不能拒**——一次真实事故的教训：
+         收紧成「只回显 http://127.0.0.1:*」之后，用户重启 DSH 就变成
+         「壁纸没了、白茫茫一片」。原因是 DSH 桌面版的界面来源可能不是
+         http://127.0.0.1:*（自定义协议 / 其它 host），于是 /__wallpapers
+         与 /__preview 被浏览器整体拦掉 → 壁纸不加载 → 而玻璃是全透明的，
+         压在默认白底上就等于「什么都没有」。
+         本服务**只绑 127.0.0.1**（硬底线，未改），所以放行任意来源在安全上
+         等价于原来的 ACAO:*；这里只把首次见到的非白名单来源记一条日志，
+         作为排查线索（而不是拦死）。 */
+      headers['Access-Control-Allow-Origin'] = origin;
+      if (!rejectedOrigins.has(origin)) {
+        rejectedOrigins.add(origin);
+        console.info(`[dsh-liquid-glass] 非白名单来源已放行：${origin}（本服务仅绑 127.0.0.1）`);
+      }
     }
   }
   return headers;
