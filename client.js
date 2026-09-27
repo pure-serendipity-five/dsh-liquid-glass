@@ -3386,7 +3386,10 @@ ${glassVars(theme, modal.alpha, modal.frost, cardRefract)}
   --dshlg-cc-ink: ${dark ? '#e8eefb' : '#0f1a2e'};          /* 近黑/近白的中性墨色，最耐看 */
   --dshlg-cc-ink-dim: ${dark ? '#9fb0cc' : '#5a6b86'};      /* 次要信息 */
   --dshlg-cc-line: ${dark ? 'rgba(255, 255, 255, 0.1)' : 'rgba(15, 26, 46, 0.08)'};
-  --dshlg-cc-veil: ${dark ? 'rgba(20, 25, 35, 0.72)' : 'rgba(252, 253, 255, 0.78)'};
+  /* 果冻的「厚度」：0.72/0.78 → 0.84/0.86（不太透，但仍能看见壁纸在动） */
+  --dshlg-cc-veil: ${dark ? 'rgba(18, 23, 33, 0.84)' : 'rgba(250, 252, 255, 0.86)'};
+  /* 果汁色：果冻本体的冰蓝，用在底部内发光与描边上 */
+  --dshlg-cc-jelly: ${dark ? '80, 150, 220' : '125, 198, 245'};
   /* 排版：系统 UI 字体栈优先，Win11 用 Segoe UI Variable，中文回落 YaHei UI；
      14px/1.65 比原来的 13px/1.5 更适合中文长文本阅读。 */
   font: 400 14px/1.65 "Segoe UI Variable Text", "Segoe UI", system-ui,
@@ -3399,12 +3402,17 @@ ${glassVars(theme, modal.alpha, modal.frost, cardRefract)}
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
   color: var(--dshlg-cc-ink);
-  border: 1px solid rgba(var(--dshlg-bar-tone), ${dark ? 0.6 : 0.9});
-  border-radius: 18px;
+  border: 1px solid rgba(var(--dshlg-bar-tone), ${dark ? 0.45 : 0.7});
+  border-radius: 22px;
+  /* 果冻的四层光影：
+     顶内白边（受光面）→ 底内冰蓝柔光（透光感）→ 外圈冰蓝柔晕 → 大范围落影（软胶厚度） */
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, ${dark ? 0.55 : 0.95}),
-    0 12px 34px rgba(var(--dshlg-bar-tone), 0.35),
-    0 18px 48px rgba(0, 0, 0, ${dark ? 0.5 : 0.2});
+    inset 0 1px 0 rgba(255, 255, 255, ${dark ? 0.6 : 1}),
+    inset 0 -14px 28px rgba(var(--dshlg-cc-jelly), ${dark ? 0.16 : 0.22}),
+    inset 0 0 0 1px rgba(255, 255, 255, ${dark ? 0.06 : 0.28}),
+    0 6px 18px rgba(var(--dshlg-cc-jelly), ${dark ? 0.3 : 0.35}),
+    0 20px 48px rgba(var(--dshlg-cc-jelly), ${dark ? 0.22 : 0.22}),
+    0 24px 64px rgba(0, 0, 0, ${dark ? 0.5 : 0.18});
   overflow: hidden;
   /* isolation 保证 ::before 的 z-index:-1 被锁在面板自己的层叠上下文里，
      不会跑到页面背景后面去。 */
@@ -3430,8 +3438,22 @@ ${glassVars(theme, modal.alpha, modal.frost, cardRefract)}
   z-index: -1;
   border-radius: inherit;
   pointer-events: none;
-  background: var(--dshlg-cc-veil);
-  backdrop-filter: blur(20px) saturate(1.5);
+  /* 三层叠在同一个伪元素上（这样高光永远在内容之下，不会把字洗白）：
+     ① 顶部高光：白 → 透明，模拟光打在圆润表面上
+     ② 果冻底色：底部冰蓝略深，做出「果汁沉积」的透光感
+     ③ 主纱：承担不透明度，保证不太透
+     模糊 24px + saturate 1.7：背景糊得更彻底，颜色也更「juicy」 */
+  background:
+    linear-gradient(180deg,
+      rgba(255, 255, 255, ${dark ? 0.16 : 0.5}) 0%,
+      rgba(255, 255, 255, ${dark ? 0.05 : 0.16}) 34%,
+      rgba(255, 255, 255, 0) 58%),
+    linear-gradient(180deg,
+      rgba(var(--dshlg-cc-jelly), 0) 46%,
+      rgba(var(--dshlg-cc-jelly), ${dark ? 0.12 : 0.16}) 100%),
+    var(--dshlg-cc-veil);
+  backdrop-filter: blur(24px) saturate(1.7);
+  -webkit-backdrop-filter: blur(24px) saturate(1.7);
   -webkit-backdrop-filter: blur(20px) saturate(1.5);
 }
 /* 系统「减少透明度」档位：退回实色、去掉模糊（无障碍要求优先） */
