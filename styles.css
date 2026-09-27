@@ -176,6 +176,24 @@
     backdrop-filter: none !important;
     -webkit-backdrop-filter: none !important;
   }
+  /* ⚠️ P0-2：这一档把玻璃面变成 ~92% 白底，而插件默认强制全白字
+     → 对比度只剩 ≈1.06:1（白底白字，等于看不见）。
+     所以「把底变白」必须同时「把字变深」——底与字是一个决策，不能分开定。
+     特异性 (1,2,0) 高于强制白字那条 (1,1,0)，同层 !important 下这里胜出。 */
+  #root [data-dshlg-region],
+  #root [data-dshlg-region] *,
+  #root .dshlg-glass,
+  #root .dshlg-glass * {
+    color: #16233a !important;
+    text-shadow: none !important;
+  }
+  /* 自制界面（控制条/面板/圆点/齿轮）不在 #root 下，单独来一条 */
+  #dshlg-controls, #dshlg-controls *,
+  #dshlg-settings, #dshlg-settings *,
+  #dshlg-restore, #dshlg-gear {
+    color: #16233a !important;
+    text-shadow: none !important;
+  }
   #root [data-dshlg-region]::before,
   #root [data-dshlg-region]::after { display: none !important; }
 }
