@@ -3689,6 +3689,22 @@ ${glassVars(theme, modal.alpha, modal.frost, cardRefract)}
 html[data-dshlg-bright-wall] #${CC_ID},
 html[data-dshlg-bright-wall] #${CC_ID} * { color: #1a1030; text-shadow: 0 1px 1px rgba(255, 255, 255, 0.6); }
 
+/* ══ 控制中心：把纱**钉死**，不跟随自适应 ══════════════════════════════
+   为什么必须钉死（用户实测「面板还是看不清」的真因）：
+     共用基座的 background 是 var(--dshlg-panel-veil, <兜底>)，而
+     ccAdaptReadability 会调设置面板那套自适应，把算出来的纱**以行内变量**
+     写到本面板元素上 —— 行内变量优先级高于样式表，兜底值根本轮不上。
+     那套自适应靠「采样背后元素的亮度」定厚薄，而本面板面积大（760x560），
+     采样点常落在没有文字的地方 → 判成「背后够暗、不用厚底」→ 写出很薄的纱
+     → 观感就是「几乎全透、字看不清」。
+   设置面板面积小、采样点基本落在正文上，所以它的自适应一直是对的 ——
+   这正是「两个面板看起来不一样」的原因。
+   结论：控制中心不该依赖采样，直接给一个本身就够读的值。
+   放在所有控制中心规则之后，同特异性下后写者胜。 */
+#${CC_ID} {
+  background: ${dark ? 'rgba(22, 27, 38, 0.94)' : 'rgba(252, 253, 255, 0.95)'} !important;
+}
+
 @keyframes dshlg-restore-glow {
   0%, 100% { filter: brightness(1); }
   50% { filter: brightness(1.22); }
