@@ -86,7 +86,19 @@ window.__ModuleLoader__.load({
     const CC_ID = 'dshlg-cc';                   // 面板本体
     const CC_BACKDROP_ID = 'dshlg-cc-backdrop'; // 面板外部的点击兜底面
     const CC_POS_KEY = 'cc';                    // 位置记忆键（与 'bar' / 'gear' 同一套）
-    const CC_API = '/dshlg-control';
+    /* 控制中心 API 基址。
+       ⚠️ 千万不能用同源相对路径：DSH 页面的同源服务器上没有这个路由
+       （用户实测面板显示「控制服务未连接 · HTTP 404」）。
+       宿主半体把 /dshlg-control/* 挂在**插件自己的 3932x 本地服务**上，
+       所以要在**调用时**取当时探到的端口。
+       ccPort 是模块级的：控制中心是模块级代码，看不到 applyGlass 里的 wallPort。 */
+    let ccPort = null;
+    const CC_API_FALLBACK = '/dshlg-control';
+    function ccApi() {
+      return ccPort
+        ? 'http://127.0.0.1:' + ccPort + '/dshlg-control'
+        : CC_API_FALLBACK;
+    }
     const CC_TABS = [
       { id: 'workspaces', label: '工作区' },
       { id: 'sessions', label: '会话' },
@@ -213,7 +225,7 @@ window.__ModuleLoader__.load({
       if (!force && ccCache.health && now - ccCache.healthAt < 8000) return ccCache.health;
       if (!force && ccCache.healthTried && now - ccCache.healthTried < 8000) return ccCache.health;
       ccCache.healthTried = now;
-      const out = await ccFetchJson(CC_API + '/health');
+      const out = await ccFetchJson(ccApi() + '/health');
       ccCache.health = out.ok
         ? {
             ok: out.data && out.data.ok !== false,
@@ -227,7 +239,7 @@ window.__ModuleLoader__.load({
     }
 
     async function ccLoadWorkspaces() {
-      const out = await ccFetchJson(CC_API + '/workspaces');
+      const out = await ccFetchJson(ccApi() + '/workspaces');
       if (!out.ok) {
         ccState.workspaces = null;
         ccState.workspacesError = out.error;
@@ -239,7 +251,7 @@ window.__ModuleLoader__.load({
     }
 
     async function ccLoadSessions() {
-      const out = await ccFetchJson(CC_API + '/sessions/inspect');
+      const out = await ccFetchJson(ccApi() + '/sessions/inspect');
       if (!out.ok) {
         ccState.sessions = null;
         ccState.sessionsError = out.error;
@@ -301,7 +313,7 @@ window.__ModuleLoader__.load({
         + ccEsc(lines.length ? lines.join('　') : '（宿主没有上报服务清单）') + '</div>'
         + '<div class="cc-actions">'
         + '<button type="button" class="cc-btn cc-go" data-cc-act="retry">重试</button>'
-        + '<span class="cc-tail">需要宿主半体（index.js）提供 ' + ccEsc(CC_API) + ' 路由</span>'
+        + '<span class="cc-tail">需要宿主半体（index.js）提供 ' + ccEsc(ccApi()) + ' 路由</span>'
         + '</div>';
       return box;
     }
@@ -645,7 +657,7 @@ window.__ModuleLoader__.load({
     /* ── 宿主动作（全部经 requestPass 挂钩，不引用 applyGlass 内部量）── */
 
     async function ccPost(action, payload) {
-      const out = await ccFetchJson(CC_API + '/workspace/' + action, {
+      const out = await ccFetchJson(ccApi() + '/workspace/' + action, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload || {}),
@@ -669,7 +681,7 @@ window.__ModuleLoader__.load({
           } else {
             /* 契约里没有 switch 端点：说人话 + 给退路，别只丢一个「不支持」 */
             ccSetNotice('error', '宿主还不支持从插件里切换空间，请用 DSH 自己的工作区入口。'
-              + '（这个能力要等宿主把 ' + CC_API + '/workspace/switch 做出来）');
+              + '（这个能力要等宿主把 ' + ccApi() + '/workspace/switch 做出来）');
           }
         } else if (kind === 'pin') {
           const ok = await ccPost('pin', { id, pinned: !w.pinned });
@@ -5319,6 +5331,9 @@ html[data-dshlg-bright-wall] #${CC_ID} * { color: #1a1030; text-shadow: 0 1px 1p
           const port = await probeServer(CONFIG.wallpaper.ports);
           if (disposed) return;
           wallPort = port;
+          /* 控制中心也要知道端口（它是模块级代码，拿不到 wallPort）。
+             宿主在 /__alive 的 features 里声明 "control" 表示该端口提供控制 API。 */
+          ccPort = port;
           if (port !== null) {
             console.info(`[dsh-liquid-glass] 壁纸服务端口 ${port}`);
             wallList = await fetchWallpapers(port);
