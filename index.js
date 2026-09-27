@@ -5,17 +5,24 @@
  * 壁纸文件（大体积 .webm / .mp3）用 HTTP 暴露给客户端半体。
  *
  * 为什么不复用 DSH 的 webServer 服务：
- *   之前实测发现，插件被 patch 插在最外层时 `ctx.get('webServer')` 拿不到该服务
+ *   实测发现，插件被 patch 插在最外层时 `ctx.get('webServer')` 拿不到该服务
  *   （Cordis 的服务查找是「子→父」单向的，插在外层就看不到内层提供的服务）。
- *   宿主半体本身就跑在 Node 里，直接 `node:http` 起服务最省事，也没有依赖顺序问题。
+ *   后来又验证过一次：连模块级 `export const inject = ['webServer']` 也无效，
+ *   重启后 `http://127.0.0.1:19387/dshlg-control/health` 依然 404。
+ *   所以控制中心 API 也走这个服务，**不再依赖任何拿不到的服务**。
  *
- * 接口：
- *   /__alive                   存活探针（客户端据此挑端口）
- *   /__wallpapers              壁纸清单（每项带 previewExt）
- *   /__preview?id=<item.id>    预览图字节（客户端画缩略图）
- *   /__video?src=<相对路径>     视频壁纸的包装页
+ * 接口（全部挂在同一个只绑 127.0.0.1 的服务上）：
+ *   /__alive                        存活探针（挑端口 + 判断能力，features 含 'control'）
+ *   /__wallpapers                   壁纸清单（每项带 previewExt）
+ *   /__preview?id=<item.id>         预览图字节（客户端画缩略图）
+ *   /__video?src=<相对路径>          视频壁纸的包装页
+ *   /dshlg-control/health           控制中心：能力探测（degraded 列不可用的官方服务）
+ *   /dshlg-control/workspaces       控制中心：工作区列表
+ *   /dshlg-control/workspace/*      控制中心：create / rename / pin / archive（无删除）
+ *   /dshlg-control/sessions/inspect 控制中心：会话只读巡检（前后哈希一致）
  *
- * 安全：只读、限定在已知壁纸目录内（路径穿越校验）、不列目录、只绑回环地址。
+ * 安全：壁纸只读、控制面只读 + 少量可逆写；限定在已知壁纸目录内（路径穿越校验）、
+ *       不列目录、只绑回环地址；CORS 只回显本机来源（见 corsHeaders 的取舍说明）。
  */
 
 import { createReadStream } from 'node:fs';
@@ -132,19 +139,54 @@ const MIME = {
   '.woff2': 'font/woff2',
 };
 
-const CORS = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
-  'Access-Control-Allow-Headers': 'Range, Content-Type',
-  'Access-Control-Expose-Headers': 'Content-Range, Content-Length, Accept-Ranges',
-};
+/* ── CORS ────────────────────────────────────────────────────
+ * 本服务的定位是「**本机插件服务**」：只绑 127.0.0.1，只服务这台机器上的界面。
+ * 这个定位带来一组有意的取舍，写在这里免得以后有人「顺手放开」：
+ *
+ *   1) 收紧来源。以前这里是 `Access-Control-Allow-Origin: *`，等于**任何网站**
+ *      都能读走壁纸清单；现在控制中心还带 POST（建工作区/改名/置顶/归档），
+ *      全开就太危险了。所以只在 Origin 是本机 http(s) 时回显它，其它来源**不发** ACAO。
+ *   2) 这一版**刻意不引入 token**。本机绑定 + 来源校验已经挡住「别的网站偷偷调」，
+ *      再加 token 只会让客户端变复杂（要传、要存、要轮换），收益不成正比。
+ *      等真有「跨机访问」的需求再加，那时也应该顺带换成本机以外的鉴权方案。
+ *   3) 只绑 127.0.0.1 这一条是硬底线，不要改成 0.0.0.0。
+ */
+const ALLOWED_ORIGIN = /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/;
+
+/** 已经记过日志的被拒来源，避免同一条日志刷屏。 */
+const rejectedOrigins = new Set();
+
+/**
+ * 按请求的 Origin 生成 CORS 头。传 req 或 res 都行（res.req 就是这条响应对应的请求）。
+ * 来源不在白名单里就不发 Access-Control-Allow-Origin —— 浏览器会因此拦住读取，
+ * 而日志里会留下唯一一次线索，便于排查「界面被 CORS 挡住」。
+ */
+function corsHeaders(source) {
+  const req = source && source.headers ? source : source?.req;
+  const headers = {
+    'Access-Control-Allow-Methods': 'GET, HEAD, POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Range, Content-Type',
+    'Access-Control-Expose-Headers': 'Content-Range, Content-Length, Accept-Ranges',
+    Vary: 'Origin',
+  };
+  const origin = req?.headers?.origin;
+  if (typeof origin === 'string' && origin) {
+    if (ALLOWED_ORIGIN.test(origin)) {
+      headers['Access-Control-Allow-Origin'] = origin;
+    } else if (!rejectedOrigins.has(origin)) {
+      rejectedOrigins.add(origin);
+      console.info(`[dsh-liquid-glass] 拒绝跨源来源 ${origin}（本服务只服务本机界面）`);
+    }
+  }
+  return headers;
+}
 
 function send(res, status, body, extra) {
   res.writeHead(status, {
     'Content-Type': 'text/plain; charset=utf-8',
     'Cache-Control': 'no-store',
     'X-Content-Type-Options': 'nosniff',
-    ...CORS,
+    ...corsHeaders(res),
     ...(extra ?? {}),
   });
   res.end(body);
@@ -635,12 +677,9 @@ async function listWallpapers() {
 
 async function serve(req, res) {
   if (req.method === 'OPTIONS') {
-    res.writeHead(204, CORS);
+    // 预检：控制中心有 POST（application/json 会触发预检），必须正确回 Methods/Headers
+    res.writeHead(204, corsHeaders(req));
     res.end();
-    return;
-  }
-  if (req.method !== 'GET' && req.method !== 'HEAD') {
-    send(res, 405, 'method not allowed');
     return;
   }
 
@@ -662,6 +701,18 @@ async function serve(req, res) {
 
   const url = new URL(req.url ?? '/', 'http://127.0.0.1');
 
+  // 控制中心 API：和壁纸接口**同一个服务、同一套安全边界**（只绑 127.0.0.1）。
+  // 它有 POST，所以必须在下面「只允许 GET/HEAD」那道闸门**之前**分流。
+  if (url.pathname === '/dshlg-control' || url.pathname.startsWith(CONTROL_PREFIX)) {
+    await handleControl(req, res);
+    return;
+  }
+
+  if (req.method !== 'GET' && req.method !== 'HEAD') {
+    send(res, 405, 'method not allowed');
+    return;
+  }
+
   // 存活探针：客户端用它找出实际端口
   if (url.pathname === '/__alive') {
     send(
@@ -670,9 +721,11 @@ async function serve(req, res) {
       JSON.stringify({
         ok: true,
         server: 'dsh-liquid-glass',
-        version: '1.9.2',
-        // 客户端据此优先挑「功能更全」的那个实例
-        features: ['wallpapers'],
+        version: '1.9.3',
+        // 客户端据此优先挑「功能更全」的那个实例，并判断控制中心能力
+        features: ['wallpapers', 'control'],
+        // 控制中心 API 的版本；客户端只在 features 含 'control' 时才看它
+        controlVersion: CONTROL_VERSION,
       }),
       { 'Content-Type': 'application/json; charset=utf-8' },
     );
@@ -734,7 +787,7 @@ async function serve(req, res) {
       'Cache-Control': 'no-cache',
       'X-Content-Type-Options': 'nosniff',
       'Content-Length': String(info.size),
-      ...CORS,
+      ...corsHeaders(res),
     });
     if (req.method === 'HEAD') {
       res.end();
@@ -807,7 +860,7 @@ async function serve(req, res) {
     'Cache-Control': 'no-cache',
     'X-Content-Type-Options': 'nosniff',
     'Accept-Ranges': 'bytes',
-    ...CORS,
+    ...corsHeaders(res),
   };
 
   // Range：大视频必须支持，否则无法 seek / 分段加载
@@ -1190,10 +1243,11 @@ function controlSessionRow(id, inspection, header, snapshot, override, running) 
 
 /* ── 各个端点 ─────────────────────────────────────────────── */
 
-function controlHealth(ctx, res, routeReady) {
+function controlHealth(ctx, res) {
   const svc = controlServices(ctx);
+  // services 只报**官方数据服务**：客户端会把每一项渲染成「可用 ✓ / 不可用 ✗」，
+  // 所以不能把载体塞进来 —— webServer 拿不到是本机常态，塞进去只会多一条误导的红叉。
   const services = {
-    webServer: !!svc.webServer && routeReady,
     workspaceRegistry: typeof svc.workspaceRegistry?.list === 'function',
     workspaceController: typeof svc.workspaceController?.rename === 'function',
     sessionController: typeof svc.sessionController?.inspect === 'function',
@@ -1204,7 +1258,9 @@ function controlHealth(ctx, res, routeReady) {
     ok: true,
     version: CONTROL_VERSION,
     route: CONTROL_PREFIX,
-    sameOrigin: true,
+    // 载体：主载体恒为「与壁纸接口同一个 127.0.0.1 服务」；webServer 只是备用，可见与否都正常
+    carrier: 'local-http-127.0.0.1',
+    carriers: { localHttp: true, webServer: typeof svc.webServer?.register === 'function' },
     services,
     degraded,
   });
@@ -1489,7 +1545,7 @@ async function controlRoute(ctx, req, res) {
     res.end();
     return;
   }
-  if (path === `${CONTROL_PREFIX}health` && method === 'GET') return controlHealth(ctx, res, true);
+  if (path === `${CONTROL_PREFIX}health` && method === 'GET') return controlHealth(ctx, res);
   if (path === `${CONTROL_PREFIX}workspaces` && method === 'GET') return controlWorkspaces(ctx, res);
   if (path === `${CONTROL_PREFIX}workspace/create` && method === 'POST') {
     return controlWorkspaceCreate(ctx, req, res);
@@ -1509,52 +1565,55 @@ async function controlRoute(ctx, req, res) {
   return controlFail(res, 404, 'not-found', '没有这个接口');
 }
 
+/** 当前插件上下文：apply() 时赋值。控制中心的**两个载体共用**它来取官方服务。 */
+let controlCtx = null;
+
 /**
- * 往 DSH 的 web server 注册控制中心路由。
+ * 载体无关的控制请求处理器 —— 3932x 本地服务与 webServer 备用路由**共用这一份**，
+ * 不复制逻辑。任何异常都在这里转成人话 JSON，绝不上抛给调用方的 catch。
+ */
+function handleControl(req, res, ctx = controlCtx) {
+  return Promise.resolve()
+    .then(() => controlRoute(ctx, req, res))
+    .catch((error) => {
+      console.error('[dsh-liquid-glass] 控制中心接口失败:', error);
+      try {
+        if (!res.headersSent) controlFail(res, 500, 'internal', '服务器内部错误，请稍后再试');
+        else res.end();
+      } catch {
+        /* 响应可能已经开始 */
+      }
+    });
+}
+
+/**
+ * **备用**载体：webServer 可见时把同一条 prefix 路由也挂上去。
  *
- * 返回值是 disposer；任何一步失败都只记日志、返回 null ——
- * 注册冲突（重复的 kind+path）会 throw，绝不能让插件激活跟着挂掉。
+ * 实测主路线走不通：本插件被 patch 在最外层，`ctx.get('webServer')` 拿不到该服务
+ * （Cordis 服务查找是子→父单向的），连模块级 `export const inject = ['webServer']`
+ * 也无效 —— 重启后 `/dshlg-control/health` 依然 404。
+ * 因此**主载体是插件自己的 3932x 服务**（serve() 里按前缀分流），
+ * 这里保留它只为「将来若可见就自动多一个载体」，注册失败只记日志、返回 null。
  */
 function registerControlRoutes(ctx) {
   const webServer = controlService(ctx, 'webServer');
   if (!webServer || typeof webServer.register !== 'function') {
-    console.info(
-      '[dsh-liquid-glass] 控制中心 API 未注册：拿不到 webServer（壁纸服务照常）。' +
-        '若本插件被 patch 在最外层看不到内层服务，需要在 cordis.patch.yml 里声明 inject: ["webServer"]。',
-    );
+    console.info('[dsh-liquid-glass] webServer 不可见，控制中心只走 3932x 本地服务（本机既定路线）');
     return null;
   }
-
-  const handler = (req, res) => {
-    Promise.resolve()
-      .then(() => controlRoute(ctx, req, res))
-      .catch((error) => {
-        console.error('[dsh-liquid-glass] 控制中心接口失败:', error);
-        try {
-          if (!res.headersSent) controlFail(res, 500, 'internal', '服务器内部错误，请稍后再试');
-          else res.end();
-        } catch {
-          /* 响应可能已经开始 */
-        }
-      });
-  };
-
   try {
-    const dispose = webServer.register({ kind: 'prefix', path: CONTROL_PREFIX, handler });
-    console.info(`[dsh-liquid-glass] 控制中心 API 已挂载: ${CONTROL_PREFIX}（同源，无 CORS）`);
+    const dispose = webServer.register({
+      kind: 'prefix',
+      path: CONTROL_PREFIX,
+      handler: (req, res) => handleControl(req, res, ctx),
+    });
+    console.info(`[dsh-liquid-glass] 控制中心 API 额外挂到了 webServer: ${CONTROL_PREFIX}`);
     return typeof dispose === 'function' ? dispose : null;
   } catch (error) {
     console.error('[dsh-liquid-glass] 控制中心路由注册失败，插件其余功能照常:', error);
     return null;
   }
 }
-
-/* ⚠️ 控制中心要往 DSH 自己的 web server 上注册同源路由，因此必须硬依赖 webServer。
-   声明方式必须是**模块级导出 inject**（DSH 自带插件就是这个写法）；
-   只写进 cordis.patch.yml 不够 —— 实测那样拿不到服务，路由全部 404。
-   为什么这个依赖安全：DSH 自己的 Web UI 就由 webServer 提供（fallback 座位是 SPA dist server），
-   且 dsh-web-app 始终在 profile 的 bundles 列表里，该服务在本组合中必然存在。 */
-export const inject = ['webServer'];
 
 export function apply(ctx) {
   let server = null;
@@ -1607,7 +1666,10 @@ export function apply(ctx) {
     console.error('[dsh-liquid-glass] 启动抛错:', error);
   }
 
-  // 控制中心：挂到 DSH 自己的 web server 上（同源）。注册失败只记日志，壁纸服务不受影响。
+  // 控制中心：主载体就是上面这个 3932x 本地服务（serve() 里按前缀分流），
+  // 所以只要能连上本机端口，控制 API 就一定在，不依赖任何拿不到的服务。
+  // 这里记下 ctx 供两个载体共用，并顺手试一次 webServer 备用载体（失败不影响）。
+  controlCtx = ctx;
   let disposeControl = null;
   try {
     disposeControl = registerControlRoutes(ctx);

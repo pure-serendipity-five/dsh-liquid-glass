@@ -1,17 +1,16 @@
 - insert:
     - id: dsh-liquid-glass
       name: '@local/dsh-liquid-glass'
-      # ⚠️ 必须声明 inject —— 否则拿不到 webServer，控制中心的同源路由不会注册，
-      #    表现就是「面板能打开但点什么都没反应」。
+      # 刻意**不**声明 inject: [webServer]。
       #
-      # 背景（一次真实事故）：本插件原先被 insert 在最外层，而 Cordis 的服务查找
-      # 是子→父单向的，插在外层就看不到内层提供的服务 → ctx.get('webServer')
-      # 返回 undefined。当时宿主半体是空的，所以写下「不依赖 webServer」绕开该问题。
-      # 现在宿主半体要注册 /dshlg-control/* 路由，必须显式 inject。
+      # 走过两次弯路，结论是这条路不通，且有害：
+      #   1) 只在 cordis.patch.yml 里写 inject   → 实测 127.0.0.1:19387/dshlg-control/health 仍 404
+      #   2) 再补上模块级 export const inject   → 重启后仍 404
+      # 根因（index.js 文件头早有记录）：插件被 insert 在最外层，而 Cordis 服务查找是
+      # 子→父单向的，插在外层就看不到内层提供的服务。
+      # 更关键的是：inject 是**硬依赖** —— 在没有 web 组合的 profile（headless）里
+      # 插件会整体不激活。用一个拿不到的服务去换激活风险，不划算。
       #
-      # 为什么这里注入是安全的：DSH 自己的 Web UI 就由 webServer 提供
-      # （它的 fallback 座位是 SPA dist server），且 dsh-web-app 始终在 profile 的
-      # bundles 列表里 —— 该服务在本组合中必然存在。inject 失败会导致插件不激活
-      # （本项目为此翻过两次车），所以这个依赖是经过论证的，不是随手加的。
-      inject:
-        - webServer
+      # 现在的方案：控制中心 API 挂在**插件自己的 3932x 本地服务**上
+      # （就是提供 /__alive /__wallpapers 的那个，已被壁纸功能长期验证）。
+      # 客户端通过 /__alive 的 features 里的 "control" 判断能力，见 index.js。
