@@ -2,8 +2,13 @@
    这类反引号会把外层模板截断，报出与真正原因无关的 ReferenceError —
    本项目踩过两次（一次是 CSS 注释里写 blur(...)，一次是 [data-dshlg-region]）。 */
 import fs from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const file = process.argv[2] ?? '<插件目录>/client.js';
+/* 插件根目录：默认取脚本上一级，可用 DSHLG_ROOT 覆盖（与其他测试一致） */
+const PLUGIN_FILE = join(process.env.DSHLG_ROOT || join(dirname(fileURLToPath(import.meta.url)), '..'), 'client.js');
+
+const file = process.argv[2] ?? PLUGIN_FILE;
 const s = fs.readFileSync(file, 'utf8');
 
 let count = 0;         // 未配对的反引号数量（奇数 = 当前在模板字符串内）

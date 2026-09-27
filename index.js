@@ -864,6 +864,691 @@ async function serve(req, res) {
   createReadStream(target).pipe(res);
 }
 
+/* ── 控制中心 API（挂在 DSH 自己的 web server 上） ─────────────
+ * M0：工作区管理 + 会话巡检，全部同源。
+ *
+ * 为什么走 webServer：DSH 的 web server 本来就在跑，注册一条命名路由即可同源访问 ——
+ * 免端口发现、免 token、免 CORS（也就不必再开 ACAO:*）。
+ * 现有 39321-39324 的壁纸静态服务保持不动，两者并存。
+ *
+ * 三条硬要求（都是本项目翻过车的点）：
+ *   1) register 冲突会 throw → 必须 try/catch，绝不能让注册失败拖垮插件激活；
+ *   2) 拿不到 webServer 就记日志跳过，壁纸服务等其余功能照常；
+ *   3) 巡检端点绝对只读：只调 list/stat/inspect，不写任何会话文件。
+ */
+const CONTROL_PREFIX = '/dshlg-control/';
+const CONTROL_VERSION = '1.10.0';
+const CONTROL_TITLE_MAX = 60;
+const CONTROL_BODY_MAX = 64 * 1024;
+const CONTROL_SESSION_LIMIT = 30;
+const CONTROL_SESSION_LIMIT_MAX = 100;
+const CONTROL_SHORT_TIMEOUT_MS = 2500;
+
+/**
+ * 取一个**可选**服务。拿不到、或形状不对，一律返回 null，由调用方降级。
+ * 先走 ctx.get(name)（官方可选访问方式），再退回 ctx[name]（组合里声明了 inject 时的形态）。
+ */
+function controlService(ctx, name) {
+  try {
+    if (typeof ctx?.get === 'function') {
+      const svc = ctx.get(name);
+      if (svc && typeof svc === 'object') return svc;
+    }
+  } catch (error) {
+    console.error(`[dsh-liquid-glass] 读取服务 ${name} 失败:`, error);
+    return null;
+  }
+  try {
+    const direct = ctx?.[name];
+    if (direct && typeof direct === 'object') return direct;
+  } catch {
+    /* 没有 inject 过就访问不到，属正常情况 */
+  }
+  return null;
+}
+
+function controlServices(ctx) {
+  return {
+    webServer: controlService(ctx, 'webServer'),
+    workspaceRegistry: controlService(ctx, 'workspaceRegistry'),
+    workspaceController: controlService(ctx, 'workspaceController'),
+    sessionController: controlService(ctx, 'sessionController'),
+    sessionPersistence: controlService(ctx, 'sessionPersistence'),
+  };
+}
+
+/** Node 异常 → 人话。只取 message，绝不外抛堆栈。 */
+const CONTROL_ERROR_HINTS = [
+  [/ENOENT|no such file|not found|不存在/i, '这个路径不存在，检查一下拼写'],
+  [/ENOTDIR|not a directory/i, '这个路径不是目录'],
+  [/EEXIST|already exists|duplicate|unique/i, '名字重复了，换一个再试'],
+  [/EACCES|EPERM|permission denied|拒绝访问/i, '没有权限访问这个路径'],
+  [/ENOSPC|no space/i, '磁盘空间不够了'],
+  [/cancelled|aborted|abort/i, '操作被取消了'],
+  [/invalid|blank|empty|required|missing/i, '参数不合法，检查一下再提交'],
+];
+
+function controlHumanMessage(error) {
+  const raw = error && typeof error.message === 'string' ? error.message : String(error ?? '');
+  const code = error && typeof error.code === 'string' ? error.code : '';
+  if (code === 'session/not-found') return '找不到这个会话，可能已经被删掉了';
+  if (/session\/not-found/.test(raw)) return '找不到这个会话，可能已经被删掉了';
+  for (const [pattern, human] of CONTROL_ERROR_HINTS) {
+    if (pattern.test(code) || pattern.test(raw)) return human;
+  }
+  const firstLine = raw.split('\n')[0].trim().slice(0, 160);
+  return firstLine || '操作失败，请稍后再试';
+}
+
+/** 人话错误配一个合适的 HTTP 状态码。 */
+function controlStatusFor(error) {
+  const text = `${error?.code ?? ''} ${error?.message ?? ''}`;
+  if (/active|busy|running|正在运行/i.test(text)) return 409;
+  if (/ENOENT|ENOTDIR|EEXIST|EACCES|EPERM|invalid|blank|empty|required|not-found|not found/i.test(text)) {
+    return 400;
+  }
+  return 500;
+}
+
+/**
+ * 统一的 JSON 响应。
+ * 同源调用不需要 CORS 头 —— 这里刻意**不**写 Access-Control-Allow-Origin，
+ * 免得把控制面又变成第二个 `ACAO:*`。
+ */
+function controlJson(res, status, payload) {
+  const body = Buffer.from(JSON.stringify(payload), 'utf8');
+  res.writeHead(status, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Content-Length': String(body.byteLength),
+    'Cache-Control': 'no-store',
+    'X-Content-Type-Options': 'nosniff',
+  });
+  res.end(body);
+}
+
+function controlOk(res, body) {
+  controlJson(res, 200, { ok: true, ...body });
+}
+
+function controlFail(res, status, code, message) {
+  controlJson(res, status, { ok: false, error: { code, message } });
+}
+
+/** 读 JSON 请求体（有大小上限，避免被塞爆内存）。 */
+async function controlReadBody(req) {
+  const chunks = [];
+  let total = 0;
+  for await (const chunk of req) {
+    total += chunk.length;
+    if (total > CONTROL_BODY_MAX) throw new Error('请求体太大了');
+    chunks.push(chunk);
+  }
+  if (total === 0) return {};
+  const text = Buffer.concat(chunks).toString('utf8');
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new Error('请求体不是合法的 JSON');
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('请求体必须是 JSON 对象');
+  return parsed;
+}
+
+/** id 只允许当标识符用：空、超长、带 .. 或路径分隔符一律拒绝。 */
+function controlIsSafeId(value) {
+  return (
+    typeof value === 'string' &&
+    value.length > 0 &&
+    value.length <= 200 &&
+    !value.includes('..') &&
+    !value.includes('/') &&
+    !value.includes('\\')
+  );
+}
+
+/** 工作区路径：必须是绝对路径，且不能含 .. 段。 */
+function controlSafePath(value) {
+  if (typeof value !== 'string') return null;
+  const path = value.trim();
+  if (!path || path.length > 1024) return null;
+  if (path.split(/[\\/]/).includes('..')) return null;
+  if (!/^[A-Za-z]:[\\/]|^\\\\|^\//.test(path)) return null;
+  return path;
+}
+
+function controlCleanTitle(value) {
+  if (typeof value !== 'string') return null;
+  const title = value.trim();
+  if (!title || title.length > 120) return null;
+  return title;
+}
+
+/** 标题一律截到 60 字符，且压掉换行 —— 返回体里不许出现整段文本。 */
+function controlTruncateTitle(text) {
+  if (typeof text !== 'string') return '';
+  const flat = text.replace(/\s+/g, ' ').trim();
+  return flat.length <= CONTROL_TITLE_MAX ? flat : `${flat.slice(0, CONTROL_TITLE_MAX)}…`;
+}
+
+/** 路径比较键：统一分隔符、统一小写、去掉结尾斜杠。 */
+function controlPathKey(value) {
+  return String(value ?? '')
+    .replace(/\//g, '\\')
+    .replace(/\\+$/, '')
+    .toLowerCase();
+}
+
+/** Workspace（durable 实体）→ 面向前端的投影。 */
+function controlWorkspaceView(ws) {
+  return {
+    id: String(ws?.id ?? ''),
+    name: controlTruncateTitle(String(ws?.title ?? '')),
+    path: String(ws?.path ?? ''),
+    sessionIds: Array.isArray(ws?.sessionIds) ? ws.sessionIds.map(String) : [],
+    createdAt: ws?.createdAt ?? null,
+    updatedAt: ws?.updatedAt ?? null,
+  };
+}
+
+/**
+ * 置顶/归档是「全局会话集合」，官方只在 workspaceController.follow() 的 baseline 帧里给出。
+ * 这里只读第一帧就断开；拿不到就退回空集合，不影响其余字段。
+ */
+async function controlReadFlags(ctx) {
+  const empty = { pinned: new Set(), archived: new Set(), available: false };
+  const controller = controlService(ctx, 'workspaceController');
+  if (!controller || typeof controller.follow !== 'function') return empty;
+  try {
+    const stream = controller.follow(AbortSignal.timeout(CONTROL_SHORT_TIMEOUT_MS));
+    for await (const frame of stream) {
+      const baseline = frame && frame.type === 'baseline' ? frame.value : null;
+      return {
+        pinned: new Set((baseline?.pinnedSessionIds ?? []).map(String)),
+        archived: new Set((baseline?.archivedSessionIds ?? []).map(String)),
+        available: !!baseline,
+      };
+    }
+  } catch (error) {
+    console.info('[dsh-liquid-glass] 读取置顶/归档状态失败（已忽略）:', controlHumanMessage(error));
+  }
+  return empty;
+}
+
+/**
+ * 「当前工作区」官方没有这个字段。这里用「最近活跃会话的 cwd」当判据，
+ * 并把判据本身回给客户端（currentBasis），免得它变成说不清的黑盒。
+ */
+async function controlCurrentCwd(ctx) {
+  const missing = { cwd: null, key: null, basis: 'unavailable' };
+  const controller = controlService(ctx, 'sessionController');
+  if (!controller || typeof controller.list !== 'function') return missing;
+  try {
+    const value = await controller.list({}, AbortSignal.timeout(CONTROL_SHORT_TIMEOUT_MS));
+    const items = Array.isArray(value?.items) ? value.items : [];
+    const hit = items.find((item) => item && typeof item.cwd === 'string' && item.cwd);
+    if (!hit) return missing;
+    return { cwd: hit.cwd, key: controlPathKey(hit.cwd), basis: '最近活跃会话的 cwd' };
+  } catch (error) {
+    console.info('[dsh-liquid-glass] 读取当前工作区失败（已忽略）:', controlHumanMessage(error));
+    return missing;
+  }
+}
+
+/** 正在运行的会话 id 集合（拿不到就当空集，不影响巡检主流程）。 */
+async function controlRunningSessions(ctx) {
+  const running = new Set();
+  const controller = controlService(ctx, 'sessionController');
+  if (!controller || typeof controller.list !== 'function') return running;
+  try {
+    const value = await controller.list({}, AbortSignal.timeout(CONTROL_SHORT_TIMEOUT_MS));
+    for (const item of value?.items ?? []) {
+      if (item?.running && item.sessionId) running.add(String(item.sessionId));
+    }
+  } catch {
+    /* 拿不到就当作都不知道 */
+  }
+  return running;
+}
+
+/**
+ * 从 inspect() 的事件里取标题：只认 `session/title` 事件的 title 字段。
+ * **绝不把事件本身、更不把消息正文回传** —— 这是本端点的红线。
+ */
+function controlSessionTitle(inspection) {
+  const events = inspection?.events;
+  if (!Array.isArray(events)) return '';
+  for (let i = events.length - 1; i >= 0; i--) {
+    const event = events[i];
+    if (event && event.type === 'session/title' && event.data && typeof event.data.title === 'string') {
+      return event.data.title;
+    }
+  }
+  return '';
+}
+
+/** 没有标题事件时的兜底标签：cwd 最后一段，或会话 id 前 8 位。 */
+function controlSessionLabel(cwd, id) {
+  if (typeof cwd === 'string' && cwd.trim()) {
+    const parts = cwd.replace(/[\\/]+$/, '').split(/[\\/]/);
+    const last = parts[parts.length - 1];
+    if (last) return last;
+  }
+  return `会话 ${String(id).slice(0, 8)}`;
+}
+
+function controlSessionRow(id, inspection, header, snapshot, override, running) {
+  const meta = inspection?.meta ?? header ?? null;
+  const fromTitle = controlSessionTitle(inspection);
+  const title = controlTruncateTitle(fromTitle || controlSessionLabel(meta?.cwd, id));
+  const eventCount =
+    typeof snapshot?.eventCount === 'number'
+      ? snapshot.eventCount
+      : Array.isArray(inspection?.events)
+        ? inspection.events.length
+        : null;
+  const sizeBytes = typeof snapshot?.sizeBytes === 'number' ? snapshot.sizeBytes : null;
+
+  let severity = 'ok';
+  let symptom = '正常';
+  let suggestion = '';
+  if (override) {
+    severity = override.severity;
+    symptom = override.symptom;
+    suggestion = override.suggestion;
+  } else if (!meta) {
+    severity = 'error';
+    symptom = '读不到会话头';
+    suggestion = '这个会话的记录可能损坏了，建议先导出备份再处理';
+  } else if (eventCount === 0) {
+    severity = 'info';
+    symptom = '空会话，没有任何事件';
+    suggestion = '可以归档掉，不影响别的会话';
+  } else if (sizeBytes !== null && sizeBytes > 20 * 1024 * 1024) {
+    severity = 'warn';
+    symptom = `日志体积偏大（约 ${Math.round(sizeBytes / 1048576)} MB）`;
+    suggestion = '考虑归档这个会话，或者开个新会话继续';
+  } else if (running) {
+    severity = 'info';
+    symptom = '正在运行';
+  }
+
+  return {
+    id,
+    title,
+    severity,
+    symptom,
+    suggestion,
+    cwd: typeof meta?.cwd === 'string' ? meta.cwd : null,
+    running: !!running,
+    eventCount,
+    sizeBytes,
+    createdAt: typeof meta?.createdAt === 'number' ? new Date(meta.createdAt).toISOString() : null,
+    titleSource: fromTitle ? 'session/title 事件' : 'cwd 兜底（没有标题事件）',
+  };
+}
+
+/* ── 各个端点 ─────────────────────────────────────────────── */
+
+function controlHealth(ctx, res, routeReady) {
+  const svc = controlServices(ctx);
+  const services = {
+    webServer: !!svc.webServer && routeReady,
+    workspaceRegistry: typeof svc.workspaceRegistry?.list === 'function',
+    workspaceController: typeof svc.workspaceController?.rename === 'function',
+    sessionController: typeof svc.sessionController?.inspect === 'function',
+    sessionPersistence: typeof svc.sessionPersistence?.list === 'function',
+  };
+  const degraded = Object.keys(services).filter((name) => !services[name]);
+  controlJson(res, 200, {
+    ok: true,
+    version: CONTROL_VERSION,
+    route: CONTROL_PREFIX,
+    sameOrigin: true,
+    services,
+    degraded,
+  });
+}
+
+async function controlWorkspaces(ctx, res) {
+  const registry = controlService(ctx, 'workspaceRegistry');
+  if (!registry || typeof registry.list !== 'function') {
+    return controlFail(res, 503, 'service-unavailable', '工作区服务暂时不可用，稍后再试');
+  }
+  let list = [];
+  try {
+    list = registry.list();
+  } catch (error) {
+    return controlFail(res, 500, 'list-failed', controlHumanMessage(error));
+  }
+  if (!Array.isArray(list)) list = [];
+
+  const flags = await controlReadFlags(ctx);
+  const current = await controlCurrentCwd(ctx);
+  const workspaces = [];
+
+  for (const ws of list) {
+    if (!ws) continue;
+    let status = 'unknown';
+    try {
+      const value = await ws.status();
+      if (value === 'ok' || value === 'missing-dir') status = value;
+    } catch {
+      /* 保持 unknown */
+    }
+    const sessionIds = Array.isArray(ws.sessionIds) ? ws.sessionIds.map(String) : [];
+    workspaces.push({
+      id: String(ws.id ?? ''),
+      name: controlTruncateTitle(String(ws.title ?? '')),
+      path: String(ws.path ?? ''),
+      isCurrent: !!current.key && controlPathKey(ws.path) === current.key,
+      sessionCount: sessionIds.length,
+      pinnedCount: sessionIds.filter((id) => flags.pinned.has(id)).length,
+      archivedCount: sessionIds.filter((id) => flags.archived.has(id)).length,
+      status,
+      createdAt: ws.createdAt ?? null,
+      updatedAt: ws.updatedAt ?? null,
+    });
+  }
+
+  controlOk(res, {
+    count: workspaces.length,
+    currentCwd: current.cwd,
+    currentBasis: current.basis,
+    flagsAvailable: flags.available,
+    workspaces,
+  });
+}
+
+async function controlWorkspaceCreate(ctx, req, res) {
+  let body;
+  try {
+    body = await controlReadBody(req);
+  } catch (error) {
+    return controlFail(res, 400, 'bad-body', controlHumanMessage(error));
+  }
+  const path = controlSafePath(body.path);
+  if (!path) {
+    return controlFail(res, 400, 'bad-path', '请填一个存在的目录的完整路径，例如 D:\\我的项目');
+  }
+  let name = null;
+  if (body.name !== undefined && body.name !== null && body.name !== '') {
+    name = controlCleanTitle(body.name);
+    if (!name) return controlFail(res, 400, 'bad-name', '名字不能为空，也不要超过 120 个字');
+  }
+
+  const controller = controlService(ctx, 'workspaceController');
+  const registry = controlService(ctx, 'workspaceRegistry');
+  try {
+    if (controller && typeof controller.create === 'function') {
+      const value = await controller.create({ path });
+      let workspace = value?.workspace ?? null;
+      const created = value?.created === true;
+      if (name && workspace && workspace.title !== name) {
+        const renamed = await controller.rename({ workspaceId: workspace.workspaceId, title: name });
+        workspace = renamed?.workspace ?? workspace;
+      }
+      return controlOk(res, { created, workspace });
+    }
+    if (registry && typeof registry.create === 'function') {
+      const ws = await registry.create(path, name ?? undefined);
+      return controlOk(res, { created: true, workspace: controlWorkspaceView(ws) });
+    }
+    return controlFail(res, 503, 'service-unavailable', '工作区服务暂时不可用，稍后再试');
+  } catch (error) {
+    return controlFail(res, controlStatusFor(error), 'create-failed', controlHumanMessage(error));
+  }
+}
+
+async function controlWorkspaceRename(ctx, req, res) {
+  let body;
+  try {
+    body = await controlReadBody(req);
+  } catch (error) {
+    return controlFail(res, 400, 'bad-body', controlHumanMessage(error));
+  }
+  const id = body.id ?? body.workspaceId;
+  if (!controlIsSafeId(id)) return controlFail(res, 400, 'bad-id', '缺少工作区 id');
+  const name = controlCleanTitle(body.name ?? body.title);
+  if (!name) return controlFail(res, 400, 'bad-name', '名字不能为空，也不要超过 120 个字');
+
+  const controller = controlService(ctx, 'workspaceController');
+  const registry = controlService(ctx, 'workspaceRegistry');
+  try {
+    if (controller && typeof controller.rename === 'function') {
+      const value = await controller.rename({ workspaceId: id, title: name });
+      return controlOk(res, { workspace: value?.workspace ?? null });
+    }
+    if (registry && typeof registry.get === 'function') {
+      const ws = registry.get(id);
+      if (!ws) return controlFail(res, 404, 'not-found', '找不到这个工作区');
+      await ws.setTitle(name);
+      return controlOk(res, { workspace: controlWorkspaceView(ws) });
+    }
+    return controlFail(res, 503, 'service-unavailable', '工作区服务暂时不可用，稍后再试');
+  } catch (error) {
+    return controlFail(res, controlStatusFor(error), 'rename-failed', controlHumanMessage(error));
+  }
+}
+
+async function controlWorkspacePin(ctx, req, res) {
+  let body;
+  try {
+    body = await controlReadBody(req);
+  } catch (error) {
+    return controlFail(res, 400, 'bad-body', controlHumanMessage(error));
+  }
+  const id = body.id ?? body.sessionId;
+  if (!controlIsSafeId(id)) return controlFail(res, 400, 'bad-id', '缺少会话 id');
+  const pinned = body.pinned !== false;
+  const method = pinned ? 'pinSession' : 'unpinSession';
+
+  const controller = controlService(ctx, 'workspaceController');
+  const registry = controlService(ctx, 'workspaceRegistry');
+  try {
+    let value = null;
+    if (controller && typeof controller[method] === 'function') {
+      value = await controller[method]({ sessionId: id });
+    } else if (registry && typeof registry[method] === 'function') {
+      await registry[method](id);
+    } else {
+      return controlFail(res, 503, 'service-unavailable', '工作区服务暂时不可用，稍后再试');
+    }
+    controlOk(res, {
+      pinned,
+      scope: 'session',
+      pinnedSessionIds: (value?.pinnedSessionIds ?? []).map(String),
+      note: '置顶作用在会话上：官方只提供会话级置顶/取消置顶',
+    });
+  } catch (error) {
+    return controlFail(res, controlStatusFor(error), 'pin-failed', controlHumanMessage(error));
+  }
+}
+
+async function controlWorkspaceArchive(ctx, req, res) {
+  let body;
+  try {
+    body = await controlReadBody(req);
+  } catch (error) {
+    return controlFail(res, 400, 'bad-body', controlHumanMessage(error));
+  }
+  // 明确不提供删除：归档可撤销，删除不可撤销
+  if (body.delete === true || body.hard === true || body.permanent === true) {
+    return controlFail(
+      res,
+      400,
+      'delete-not-supported',
+      '这里只做归档，不提供删除：归档可以撤销，删除不能',
+    );
+  }
+  const id = body.id ?? body.sessionId;
+  if (!controlIsSafeId(id)) return controlFail(res, 400, 'bad-id', '缺少会话 id');
+  const stopActivity = body.stopActivity === true;
+
+  const controller = controlService(ctx, 'workspaceController');
+  const registry = controlService(ctx, 'workspaceRegistry');
+  try {
+    let archivedSessionIds = null;
+    if (controller && typeof controller.archiveSession === 'function') {
+      const value = await controller.archiveSession({ sessionId: id, stopActivity });
+      archivedSessionIds = (value?.archivedSessionIds ?? []).map(String);
+    } else if (registry && typeof registry.archiveSession === 'function') {
+      await registry.archiveSession(id, { stopActivity });
+    } else {
+      return controlFail(res, 503, 'service-unavailable', '工作区服务暂时不可用，稍后再试');
+    }
+    controlOk(res, {
+      archived: true,
+      stoppedActivity: stopActivity,
+      archivedSessionIds,
+      note: '仅归档：会话文件与内容都保留，可以撤销',
+    });
+  } catch (error) {
+    return controlFail(res, controlStatusFor(error), 'archive-failed', controlHumanMessage(error));
+  }
+}
+
+async function controlSessionsInspect(ctx, url, res) {
+  const persistence = controlService(ctx, 'sessionPersistence');
+  const controller = controlService(ctx, 'sessionController');
+  if (!persistence || typeof persistence.list !== 'function') {
+    return controlFail(res, 503, 'service-unavailable', '会话存储服务暂时不可用，稍后再试');
+  }
+
+  const asked = Number(url.searchParams.get('limit'));
+  const limit = Number.isFinite(asked)
+    ? Math.min(Math.max(Math.trunc(asked), 1), CONTROL_SESSION_LIMIT_MAX)
+    : CONTROL_SESSION_LIMIT;
+
+  let snapshots = [];
+  try {
+    snapshots = await persistence.list({ signal: AbortSignal.timeout(8000) });
+  } catch (error) {
+    return controlFail(res, 500, 'list-failed', controlHumanMessage(error));
+  }
+  if (!Array.isArray(snapshots)) snapshots = [];
+
+  const running = await controlRunningSessions(ctx);
+  const canInspect = !!controller && typeof controller.inspect === 'function';
+  const sessions = [];
+
+  for (const snapshot of snapshots) {
+    if (sessions.length >= limit) break;
+    const header = snapshot?.header ?? null;
+    const id = header?.id ? String(header.id) : '';
+    if (!id) continue;
+
+    let inspection = null;
+    if (canInspect) {
+      try {
+        inspection = await controller.inspect(id, AbortSignal.timeout(4000));
+      } catch (error) {
+        sessions.push(
+          controlSessionRow(id, null, header, snapshot, {
+            severity: 'error',
+            symptom: '这条会话的记录读不出来',
+            suggestion: '可能损坏或被别的程序占用，先确认没有程序正在写它',
+          }, running.has(id)),
+        );
+        continue;
+      }
+    }
+    sessions.push(controlSessionRow(id, inspection, header, snapshot, null, running.has(id)));
+  }
+
+  controlJson(res, 200, {
+    ok: true,
+    version: CONTROL_VERSION,
+    scannedAt: new Date().toISOString(),
+    count: sessions.length,
+    total: snapshots.length,
+    truncated: snapshots.length > sessions.length,
+    sessions,
+  });
+}
+
+/* ── 路由分发与挂载 ───────────────────────────────────────── */
+
+async function controlRoute(ctx, req, res) {
+  const url = new URL(req.url ?? '/', 'http://127.0.0.1');
+  const path = url.pathname;
+  const method = req.method === 'HEAD' ? 'GET' : req.method;
+
+  let decoded = path;
+  try {
+    decoded = decodeURIComponent(path);
+  } catch {
+    return controlFail(res, 403, 'bad-path', '路径不合法');
+  }
+  if (decoded.split(/[\\/]/).includes('..')) {
+    return controlFail(res, 403, 'bad-path', '路径不合法');
+  }
+
+  if (method === 'OPTIONS') {
+    res.writeHead(204, { Allow: 'GET, POST, OPTIONS' });
+    res.end();
+    return;
+  }
+  if (path === `${CONTROL_PREFIX}health` && method === 'GET') return controlHealth(ctx, res, true);
+  if (path === `${CONTROL_PREFIX}workspaces` && method === 'GET') return controlWorkspaces(ctx, res);
+  if (path === `${CONTROL_PREFIX}workspace/create` && method === 'POST') {
+    return controlWorkspaceCreate(ctx, req, res);
+  }
+  if (path === `${CONTROL_PREFIX}workspace/rename` && method === 'POST') {
+    return controlWorkspaceRename(ctx, req, res);
+  }
+  if (path === `${CONTROL_PREFIX}workspace/pin` && method === 'POST') {
+    return controlWorkspacePin(ctx, req, res);
+  }
+  if (path === `${CONTROL_PREFIX}workspace/archive` && method === 'POST') {
+    return controlWorkspaceArchive(ctx, req, res);
+  }
+  if (path === `${CONTROL_PREFIX}sessions/inspect` && method === 'GET') {
+    return controlSessionsInspect(ctx, url, res);
+  }
+  return controlFail(res, 404, 'not-found', '没有这个接口');
+}
+
+/**
+ * 往 DSH 的 web server 注册控制中心路由。
+ *
+ * 返回值是 disposer；任何一步失败都只记日志、返回 null ——
+ * 注册冲突（重复的 kind+path）会 throw，绝不能让插件激活跟着挂掉。
+ */
+function registerControlRoutes(ctx) {
+  const webServer = controlService(ctx, 'webServer');
+  if (!webServer || typeof webServer.register !== 'function') {
+    console.info(
+      '[dsh-liquid-glass] 控制中心 API 未注册：拿不到 webServer（壁纸服务照常）。' +
+        '若本插件被 patch 在最外层看不到内层服务，需要在 cordis.patch.yml 里声明 inject: ["webServer"]。',
+    );
+    return null;
+  }
+
+  const handler = (req, res) => {
+    Promise.resolve()
+      .then(() => controlRoute(ctx, req, res))
+      .catch((error) => {
+        console.error('[dsh-liquid-glass] 控制中心接口失败:', error);
+        try {
+          if (!res.headersSent) controlFail(res, 500, 'internal', '服务器内部错误，请稍后再试');
+          else res.end();
+        } catch {
+          /* 响应可能已经开始 */
+        }
+      });
+  };
+
+  try {
+    const dispose = webServer.register({ kind: 'prefix', path: CONTROL_PREFIX, handler });
+    console.info(`[dsh-liquid-glass] 控制中心 API 已挂载: ${CONTROL_PREFIX}（同源，无 CORS）`);
+    return typeof dispose === 'function' ? dispose : null;
+  } catch (error) {
+    console.error('[dsh-liquid-glass] 控制中心路由注册失败，插件其余功能照常:', error);
+    return null;
+  }
+}
+
 export function apply(ctx) {
   let server = null;
 
@@ -915,7 +1600,21 @@ export function apply(ctx) {
     console.error('[dsh-liquid-glass] 启动抛错:', error);
   }
 
+  // 控制中心：挂到 DSH 自己的 web server 上（同源）。注册失败只记日志，壁纸服务不受影响。
+  let disposeControl = null;
+  try {
+    disposeControl = registerControlRoutes(ctx);
+  } catch (error) {
+    console.error('[dsh-liquid-glass] 控制中心初始化异常（已忽略）:', error);
+  }
+
   const stop = () => {
+    try {
+      disposeControl?.();
+    } catch {
+      /* 忽略 */
+    }
+    disposeControl = null;
     try {
       server?.close();
       server = null;

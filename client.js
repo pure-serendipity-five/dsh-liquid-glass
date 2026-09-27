@@ -69,6 +69,931 @@ window.__ModuleLoader__.load({
     const CLS_BAR = 'dshlg-bar';       // 左栏会话行（和右栏同款玻璃）
     const CLS_BRAND = 'dshlg-brand';   // 左上角品牌区（蓝色液态玻璃）
 
+    /* ══════════════════════════════════════════════════════════════
+     * 控制中心（M0 外壳 + M1 工作区管理）
+     *
+     * 为什么整块放在**模块级**而不是塞进 applyGlass()：
+     *   · applyGlass 已经是 700+ 行的单个函数，再塞进去没法维护；
+     *   · 模块级函数**不能**引用 applyGlass 内部的局部量（如 pass）——
+     *     本项目踩过「点了必抛 ReferenceError」的坑，所以这里只走
+     *     已经存在的模块级挂钩 requestPass()。
+     *   · 不引入任何新的色调变量：材质全部复用已有的 --dshlg-bar-tone
+     *     与 --dshlg-panel-veil / --dshlg-panel-ink（和设置面板同一套）。
+     *   · 面板本体**不做 backdrop-filter**（全屏/容器上的 backdrop 会闪，
+     *     而且会变成 fixed 后代的包含块）——玻璃感由描边 + 顶光给出，
+     *     与控制条 / 设置面板完全一致。
+     * ══════════════════════════════════════════════════════════════ */
+    const CC_ID = 'dshlg-cc';                   // 面板本体
+    const CC_BACKDROP_ID = 'dshlg-cc-backdrop'; // 面板外部的点击兜底面
+    const CC_POS_KEY = 'cc';                    // 位置记忆键（与 'bar' / 'gear' 同一套）
+    const CC_API = '/dshlg-control';
+    const CC_TABS = [
+      { id: 'workspaces', label: '工作区' },
+      { id: 'sessions', label: '会话' },
+      { id: 'plugins', label: '插件' },
+      { id: 'system', label: '系统' },
+    ];
+
+    /* 面板状态集中在一个对象里：散落的模块级 let 最容易出现
+       「只插了调用没插定义」，集中一处一眼能看全，也不容易撞名。 */
+    const ccState = {
+      tab: 'workspaces',
+      lastFocus: null,
+      workspaces: null,       // null = 还没拉到
+      workspacesError: null,
+      sessions: null,
+      sessionsError: null,
+      health: null,
+      sortAsc: true,
+      showArchived: false,
+      wizard: null,           // { step:'path'|'name', path, name, error }
+      confirm: null,          // { kind, id, name, sessions } 危险动作二次确认
+      renamingId: null,
+      busy: false,
+      notice: null,           // 人话提示（成功 / 失败都走它）
+      renderError: null,      // 错误边界：分页渲染抛异常时记这里
+    };
+
+    /* 健康状态的短缓存：避免每次切分页都打一次宿主 */
+    const ccCache = { health: null, healthAt: 0, healthTried: 0 };
+
+    /* ── 小工具（全部定义在使用点之前）──────────────────────────── */
+
+    /** 转义后放进 innerHTML。 */
+    function ccEsc(value) {
+      return String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    /**
+     * 错误人话化：宿主返回 { ok:false, error:{ code, message } }。
+     * 认不出的 code 就把原文附上 —— 绝不显示「操作失败」这种没信息量的话。
+     */
+    function ccHumanError(error) {
+      const code = String((error && error.code) || '').toLowerCase();
+      const raw = String((error && error.message) || error || '').trim();
+      const map = {
+        name_taken: '这个名字已经被别的空间用了，换一个。',
+        duplicate: '这个名字已经被别的空间用了，换一个。',
+        exists: '这个名字或目录已经存在了。',
+        invalid_name: '名字不合法：不能为空，也不能包含 \\ / : * ? " < > | 这些字符。',
+        bad_name: '名字不合法：不能为空，也不能包含 \\ / : * ? " < > | 这些字符。',
+        not_found: '找不到这个空间，可能已经被改名或归档了。刷新一下列表。',
+        no_such_workspace: '找不到这个空间，可能已经被改名或归档了。刷新一下列表。',
+        enoent: '目录不存在，或者当前账号没有权限读它。',
+        eacces: '没有权限访问这个目录。',
+        eperm: '没有权限访问这个目录。',
+        eexist: '目标目录已经存在了。',
+        not_a_directory: '这个路径不是一个目录。',
+        enotdir: '这个路径不是一个目录。',
+        unsupported: '当前宿主版本还不支持这个操作（需要升级宿主半体）。',
+        not_implemented: '当前宿主版本还没有实现这个操作。',
+        timeout: '宿主没有在预期时间内响应，稍后再试。',
+        offline: '控制服务未连接，稍后再试。',
+        busy: '宿主正忙，稍后再试。',
+        internal: '宿主内部出错，看 DSH 日志能拿到细节。',
+      };
+      if (code && map[code]) return map[code];
+      if (/ENOENT/i.test(raw)) return '目录不存在，或者当前账号没有权限读它。';
+      if (/EACCES|EPERM/i.test(raw)) return '没有权限访问这个目录。';
+      if (/EEXIST/i.test(raw)) return '目标目录已经存在了。';
+      if (/fetch|network|failed to load|连接/i.test(raw)) return '控制服务未连接：' + (raw || '网络请求失败');
+      return raw || '未知错误（宿主没有给出原因）。';
+    }
+
+    /** 统一取 JSON。返回 { ok, data, error }，**绝不抛异常**。 */
+    async function ccFetchJson(url, options) {
+      try {
+        const res = await fetch(url, Object.assign({ cache: 'no-store' }, options || {}));
+        if (!res.ok) {
+          return { ok: false, error: { code: 'http_' + res.status, message: 'HTTP ' + res.status } };
+        }
+        const data = await res.json().catch(() => null);
+        if (data === null) return { ok: false, error: { code: 'bad_json', message: '返回内容不是 JSON' } };
+        return { ok: true, data };
+      } catch (error) {
+        return { ok: false, error: { code: 'offline', message: String((error && error.message) || error) } };
+      }
+    }
+
+    /** 宿主健康状态（缓存 8 秒；force=true 给「重试」按钮用）。 */
+    async function ccLoadHealth(force) {
+      const now = Date.now();
+      if (!force && ccCache.health && now - ccCache.healthAt < 8000) return ccCache.health;
+      if (!force && ccCache.healthTried && now - ccCache.healthTried < 8000) return ccCache.health;
+      ccCache.healthTried = now;
+      const out = await ccFetchJson(CC_API + '/health');
+      ccCache.health = out.ok
+        ? {
+            ok: out.data && out.data.ok !== false,
+            version: out.data && out.data.version,
+            services: (out.data && out.data.services) || {},
+          }
+        : { ok: false, error: out.error };
+      ccCache.healthAt = Date.now();
+      ccState.health = ccCache.health;
+      return ccCache.health;
+    }
+
+    async function ccLoadWorkspaces() {
+      const out = await ccFetchJson(CC_API + '/workspaces');
+      if (!out.ok) {
+        ccState.workspaces = null;
+        ccState.workspacesError = out.error;
+        return null;
+      }
+      ccState.workspaces = Array.isArray(out.data) ? out.data : [];
+      ccState.workspacesError = null;
+      return ccState.workspaces;
+    }
+
+    async function ccLoadSessions() {
+      const out = await ccFetchJson(CC_API + '/sessions/inspect');
+      if (!out.ok) {
+        ccState.sessions = null;
+        ccState.sessionsError = out.error;
+        return null;
+      }
+      ccState.sessions = Array.isArray(out.data) ? out.data : [];
+      ccState.sessionsError = null;
+      return ccState.sessions;
+    }
+
+    /* ── 面板的建 / 开 / 关 ───────────────────────────────────── */
+
+    function ccEl() { return document.getElementById(CC_ID); }
+
+    function ccIsOpen() {
+      const el = ccEl();
+      return !!el && el.hasAttribute('data-dshlg-cc-open');
+    }
+
+    function ccSetNotice(kind, text) {
+      ccState.notice = text ? { kind, text } : null;
+    }
+
+    /** 面板壳：标题 + 可选动作按钮（用 DOM 追加，不重写 innerHTML）。 */
+    function ccShell(titleText, actionHtml) {
+      const wrap = document.createElement('div');
+      wrap.className = 'cc-sec';
+      const h = document.createElement('h4');
+      h.textContent = titleText;
+      wrap.appendChild(h);
+      if (actionHtml) {
+        const box = document.createElement('div');
+        box.innerHTML = actionHtml;
+        wrap.appendChild(box);
+      }
+      return wrap;
+    }
+
+    function ccNoticeNode() {
+      const note = ccState.notice;
+      if (!note) return null;
+      const div = document.createElement('div');
+      div.className = 'cc-note ' + (note.kind === 'error' ? 'cc-err' : 'cc-ok');
+      div.textContent = note.text;
+      return div;
+    }
+
+    /** 降级页：宿主不可达时给人话，而不是空白面板。 */
+    function ccDegradedNode(what, error) {
+      const box = document.createElement('div');
+      box.className = 'cc-degraded';
+      const svc = (ccState.health && ccState.health.services) || {};
+      const lines = Object.keys(svc).map((k) => k + (svc[k] ? ' ✓' : ' ✗'));
+      box.innerHTML = '<b>控制服务未连接</b>'
+        + '<div class="cc-why">' + ccEsc(what) + '暂时不可用。'
+        + (error ? '原因：' + ccEsc(ccHumanError(error)) : '')
+        + '</div>'
+        + '<div class="cc-why">当前可用：'
+        + ccEsc(lines.length ? lines.join('　') : '（宿主没有上报服务清单）') + '</div>'
+        + '<div class="cc-actions">'
+        + '<button type="button" class="cc-btn cc-go" data-cc-act="retry">重试</button>'
+        + '<span class="cc-tail">需要宿主半体（index.js）提供 ' + ccEsc(CC_API) + ' 路由</span>'
+        + '</div>';
+      return box;
+    }
+
+    /* ── 分页 1：工作区（M1）──────────────────────────────────── */
+
+    function ccTabWorkspaces() {
+      const frag = document.createDocumentFragment();
+      const notice = ccNoticeNode();
+      if (notice) frag.appendChild(notice);
+
+      if (ccState.workspacesError) {
+        frag.appendChild(ccDegradedNode('工作区列表', ccState.workspacesError));
+        return frag;
+      }
+      if (ccState.workspaces === null) {
+        const loading = document.createElement('div');
+        loading.className = 'cc-empty';
+        loading.textContent = '正在读取工作区…';
+        frag.appendChild(loading);
+        void ccLoadWorkspaces().then(() => { if (ccIsOpen()) ccRender(); });
+        return frag;
+      }
+
+      const bar = document.createElement('div');
+      bar.className = 'cc-actions';
+      bar.innerHTML =
+        '<button type="button" class="cc-btn cc-go" data-cc-act="new">新建空间</button>'
+        + '<button type="button" class="cc-btn" data-cc-act="sort">排序：' + (ccState.sortAsc ? '名称 ↑' : '名称 ↓') + '</button>'
+        + '<button type="button" class="cc-btn" data-cc-act="reload">刷新</button>'
+        + '<button type="button" class="cc-btn" data-cc-act="show-archived">' + (ccState.showArchived ? '隐藏已归档' : '显示已归档') + '</button>'
+        + '<span class="cc-tail">共 ' + ccState.workspaces.length + ' 个</span>';
+      frag.appendChild(bar);
+
+      if (ccState.wizard) frag.appendChild(ccWizardNode());
+
+      const list = ccState.workspaces
+        .filter((w) => ccState.showArchived || !w.archived)
+        .slice()
+        .sort((a, b) => {
+          if (!!b.pinned !== !!a.pinned) return (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0);
+          const r = String(a.name || '').localeCompare(String(b.name || ''), 'zh-Hans-CN');
+          return ccState.sortAsc ? r : -r;
+        });
+
+      if (list.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'cc-empty';
+        empty.textContent = ccState.workspaces.length === 0 ? '宿主没返回任何工作区。' : '当前筛选下没有工作区。';
+        frag.appendChild(empty);
+      }
+      for (const w of list) frag.appendChild(ccWorkspaceRow(w));
+
+      const tail = document.createElement('div');
+      tail.className = 'cc-tail';
+      tail.textContent = '删除一律只做「归档」—— 本项目还没验证过真删除的语义边界，所以不提供。';
+      frag.appendChild(tail);
+      return frag;
+    }
+
+    function ccWorkspaceRow(w) {
+      const row = document.createElement('div');
+      row.className = 'cc-row' + (w.current ? ' is-current' : '');
+      const id = String(w.id ?? '');
+
+      const chips = [];
+      if (w.current) chips.push('<span class="cc-chip cc-cur">当前</span>');
+      if (w.pinned) chips.push('<span class="cc-chip">置顶</span>');
+      if (w.archived) chips.push('<span class="cc-chip cc-warn">已归档</span>');
+      chips.push('<span class="cc-chip">' + Number(w.sessionCount || 0) + ' 会话</span>');
+
+      row.innerHTML = '<div class="cc-main">'
+        + '<div class="cc-name">' + ccEsc(w.name || '(未命名)') + '</div>'
+        + '<div class="cc-path" title="' + ccEsc(w.path || '') + '">' + ccEsc(w.path || '(无路径)') + '</div>'
+        + '</div>'
+        + '<div class="cc-meta">' + chips.join('') + '</div>';
+
+      const main = row.querySelector('.cc-main');
+
+      const acts = document.createElement('div');
+      acts.className = 'cc-actions';
+      acts.innerHTML =
+        (w.current ? '' : '<button type="button" class="cc-btn cc-go" data-cc-ws="switch" data-id="' + ccEsc(id) + '">切换</button>')
+        + '<button type="button" class="cc-btn" data-cc-ws="rename" data-id="' + ccEsc(id) + '">重命名</button>'
+        + '<button type="button" class="cc-btn" data-cc-ws="pin" data-id="' + ccEsc(id) + '">' + (w.pinned ? '取消置顶' : '置顶') + '</button>'
+        + (w.archived
+          ? '<button type="button" class="cc-btn" data-cc-ws="unarchive" data-id="' + ccEsc(id) + '">取消归档</button>'
+          : '<button type="button" class="cc-btn cc-danger" data-cc-ws="archive" data-id="' + ccEsc(id) + '">归档</button>');
+      main.appendChild(acts);
+
+      /* 危险动作二次确认：就地展开，并显示会影响多少个会话 */
+      if (ccState.confirm && String(ccState.confirm.id) === id) {
+        const c = ccState.confirm;
+        const box = document.createElement('div');
+        box.className = 'cc-confirm';
+        box.innerHTML = '<b>确定要' + (c.kind === 'archive' ? '归档' : '取消归档') + '「' + ccEsc(c.name) + '」吗？</b>'
+          + '<div class="cc-why">会影响 ' + Number(c.sessions || 0) + ' 个会话。'
+          + (c.kind === 'archive' ? '归档不会删除任何文件，之后可以取消归档。' : '')
+          + '</div>'
+          + '<div class="cc-actions">'
+          + '<button type="button" class="cc-btn cc-danger cc-go" data-cc-confirm="yes">确定'
+          + (c.kind === 'archive' ? '归档' : '取消归档') + '</button>'
+          + '<button type="button" class="cc-btn" data-cc-confirm="no">取消</button>'
+          + '</div>';
+        main.appendChild(box);
+      }
+
+      /* 重命名：就地输入 */
+      if (ccState.renamingId === id) {
+        const form = document.createElement('div');
+        form.className = 'cc-form';
+        form.innerHTML = '<label>新名字</label>'
+          + '<input type="text" data-cc-rename-input value="' + ccEsc(w.name || '') + '" />'
+          + '<div class="cc-actions">'
+          + '<button type="button" class="cc-btn cc-go" data-cc-ws="rename-ok" data-id="' + ccEsc(id) + '">保存</button>'
+          + '<button type="button" class="cc-btn" data-cc-ws="rename-cancel">取消</button>'
+          + '</div>';
+        main.appendChild(form);
+      }
+      return row;
+    }
+
+    function ccWizardNode() {
+      const wiz = ccState.wizard;
+      const box = document.createElement('div');
+      box.className = 'cc-confirm';
+      if (!wiz) return box;
+      if (wiz.step === 'path') {
+        box.innerHTML = '<b>新建空间 · 第 1 步：选目录</b>'
+          + '<div class="cc-why">填一个已存在目录的绝对路径。宿主会校验它是否存在、是不是目录、有没有权限。</div>'
+          + '<div class="cc-form">'
+          + '<input type="text" data-cc-wiz-path placeholder="D:\\AI应用\\某个目录" value="' + ccEsc(wiz.path || '') + '" />'
+          + (wiz.error ? '<div class="cc-why">' + ccEsc(wiz.error) + '</div>' : '')
+          + '<div class="cc-actions">'
+          + '<button type="button" class="cc-btn cc-go" data-cc-wiz="path-next">下一步</button>'
+          + '<button type="button" class="cc-btn" data-cc-wiz="cancel">取消</button>'
+          + '</div></div>';
+        return box;
+      }
+      box.innerHTML = '<b>新建空间 · 第 2 步：起名字</b>'
+        + '<div class="cc-why">目录：' + ccEsc(wiz.path || '') + '</div>'
+        + '<div class="cc-form">'
+        + '<input type="text" data-cc-wiz-name placeholder="显示名（留空则用目录名）" value="' + ccEsc(wiz.name || '') + '" />'
+        + (wiz.error ? '<div class="cc-why">' + ccEsc(wiz.error) + '</div>' : '')
+        + '<div class="cc-actions">'
+        + '<button type="button" class="cc-btn cc-go" data-cc-wiz="create">创建</button>'
+        + '<button type="button" class="cc-btn" data-cc-wiz="back">上一步</button>'
+        + '<button type="button" class="cc-btn" data-cc-wiz="cancel">取消</button>'
+        + '</div></div>';
+      return box;
+    }
+
+    /* ── 分页 2：会话 ─────────────────────────────────────────── */
+
+    function ccTabSessions() {
+      const frag = document.createDocumentFragment();
+      const intro = ccShell('会话巡检', '<div class="cc-tail">只读：列出有问题的会话和修复建议，本面板不会替你改会话。</div>');
+      frag.appendChild(intro);
+
+      const notice = ccNoticeNode();
+      if (notice) frag.appendChild(notice);
+
+      if (ccState.sessionsError) {
+        frag.appendChild(ccDegradedNode('会话巡检', ccState.sessionsError));
+        return frag;
+      }
+      if (ccState.sessions === null) {
+        const loading = document.createElement('div');
+        loading.className = 'cc-empty';
+        loading.textContent = '正在读取…';
+        frag.appendChild(loading);
+        void ccLoadSessions().then(() => { if (ccIsOpen()) ccRender(); });
+        return frag;
+      }
+      if (ccState.sessions.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'cc-empty';
+        empty.textContent = '没有发现需要处理的会话。';
+        frag.appendChild(empty);
+        return frag;
+      }
+
+      const order = { high: 0, error: 0, warn: 1, medium: 1, low: 2, info: 3 };
+      const rows = ccState.sessions
+        .slice()
+        .sort((a, b) => (order[String(a.severity || 'info').toLowerCase()] ?? 9) - (order[String(b.severity || 'info').toLowerCase()] ?? 9));
+
+      for (const s of rows) {
+        const row = document.createElement('div');
+        row.className = 'cc-row';
+        const sev = String(s.severity || 'info').toLowerCase();
+        const chipCls = (sev === 'high' || sev === 'error') ? 'cc-bad' : ((sev === 'warn' || sev === 'medium') ? 'cc-warn' : '');
+        row.innerHTML = '<div class="cc-main">'
+          + '<div class="cc-name">' + ccEsc(s.title || s.id || '(无标题)') + '</div>'
+          + '<div class="cc-path">' + ccEsc(s.symptom || '') + '</div>'
+          + (s.suggestion ? '<div class="cc-path">建议：' + ccEsc(s.suggestion) + '</div>' : '')
+          + '</div>'
+          + '<div class="cc-meta"><span class="cc-chip ' + chipCls + '">' + ccEsc(sev) + '</span></div>';
+        frag.appendChild(row);
+      }
+      const tail = document.createElement('div');
+      tail.className = 'cc-tail';
+      tail.textContent = '共 ' + rows.length + ' 条。';
+      frag.appendChild(tail);
+      return frag;
+    }
+
+    /* ── 分页 3：插件 ─────────────────────────────────────────── */
+
+    function ccTabPlugins() {
+      const frag = document.createDocumentFragment();
+      const tagged = document.querySelectorAll('[data-dshlg-region]').length;
+      const sec = ccShell('已加载的玻璃插件',
+        '<div class="cc-kv"><span class="k">本插件版本</span><span class="v">v' + ccEsc(VERSION) + '</span></div>'
+        + '<div class="cc-kv"><span class="k">运行期样式</span><span class="v">'
+        + (document.getElementById(STYLE_ID_DYN) ? '已注入' : '未注入')
+        + '　静态材质：' + (document.getElementById(STYLE_LINK_ID) ? '已加载' : '内联兜底')
+        + '</span></div>'
+        + '<div class="cc-kv"><span class="k">已标记玻璃面</span><span class="v">' + tagged + ' 块</span></div>'
+        + '<div class="cc-kv"><span class="k">壁纸控制条</span><span class="v">'
+        + (document.getElementById(CTRL_ID) ? '在' : '不在（已收起或未探到宿主）') + '</span></div>');
+      frag.appendChild(sec);
+
+      const other = ccShell('其它插件',
+        '<div class="cc-empty">本项目<strong>不提供</strong>第三方插件的安装 / 卸载 / 启停。'
+        + '<div class="cc-tail">原因：宿主端没有可验证的插件管理接口，误操作会直接影响 DSH 启动。'
+        + '要看已安装插件请用 DSH 自己的界面。</div></div>');
+      frag.appendChild(other);
+      return frag;
+    }
+
+    /* ── 分页 4：系统 ─────────────────────────────────────────── */
+
+    function ccTabSystem() {
+      const frag = document.createDocumentFragment();
+      const h = ccState.health;
+
+      if (!h) {
+        const loading = document.createElement('div');
+        loading.className = 'cc-empty';
+        loading.textContent = '正在读取宿主状态…';
+        frag.appendChild(loading);
+        void ccLoadHealth().then(() => { if (ccIsOpen()) ccRender(); });
+        return frag;
+      }
+      if (!h.ok) {
+        frag.appendChild(ccDegradedNode('宿主控制接口', h.error));
+      } else {
+        const svc = h.services || {};
+        const keys = Object.keys(svc);
+        frag.appendChild(ccShell('宿主',
+          '<div class="cc-kv"><span class="k">状态</span><span class="v">已连接</span></div>'
+          + '<div class="cc-kv"><span class="k">宿主版本</span><span class="v">' + ccEsc(h.version || '(未上报)') + '</span></div>'
+          + '<div class="cc-kv"><span class="k">服务</span><span class="v">'
+          + (keys.length ? keys.map((k) => ccEsc(k) + (svc[k] ? ' ✓' : ' ✗')).join('　') : '（宿主没有上报服务清单）')
+          + '</span></div>'));
+      }
+
+      frag.appendChild(ccShell('应用',
+        '<div class="cc-kv"><span class="k">页面来源</span><span class="v">'
+        + ccEsc(String(location.origin || location.href).slice(0, 120)) + '</span></div>'
+        + '<div class="cc-kv"><span class="k">视口</span><span class="v">'
+        + window.innerWidth + ' × ' + window.innerHeight + '</span></div>'
+        + '<div class="cc-kv"><span class="k">材质来源</span><span class="v">'
+        + ccEsc((stylesheetUrls && stylesheetUrls()[0]) || '(未知)') + '</span></div>'));
+
+      const acts = document.createElement('div');
+      acts.className = 'cc-actions';
+      acts.innerHTML = '<button type="button" class="cc-btn" data-cc-act="reload-health">刷新状态</button>'
+        + '<button type="button" class="cc-btn" data-cc-act="log-report">把诊断打到控制台</button>';
+      frag.appendChild(acts);
+
+      const tail = document.createElement('div');
+      tail.className = 'cc-tail';
+      tail.textContent = '凭据 / 密钥管理刻意不做：宿主 HTTP 服务绝不承载任何密钥读写。';
+      frag.appendChild(tail);
+      return frag;
+    }
+
+    function ccTabNode(tabId) {
+      if (tabId === 'sessions') return ccTabSessions();
+      if (tabId === 'plugins') return ccTabPlugins();
+      if (tabId === 'system') return ccTabSystem();
+      return ccTabWorkspaces();
+    }
+
+    /* ── 渲染（含错误边界）────────────────────────────────────── */
+
+    /**
+     * 错误边界：任一分页渲染抛异常 → 只把**这一个分页**换成
+     * 「这个分页出错了 + 重试」，整页和另外几个分页都不受影响。
+     * 这里刻意自己 try/catch，绝不让异常冒到 window.onerror。
+     */
+    function ccRender() {
+      const el = ccEl();
+      if (!el) return;
+      const body = el.querySelector('.cc-body');
+      const tabs = el.querySelector('.cc-tabs');
+      if (!body || !tabs) return;
+
+      tabs.replaceChildren();
+      for (const tab of CC_TABS) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.textContent = tab.label;
+        btn.dataset.ccTab = tab.id;
+        btn.setAttribute('role', 'tab');
+        btn.setAttribute('aria-selected', tab.id === ccState.tab ? 'true' : 'false');
+        if (tab.id === ccState.tab) btn.classList.add('is-on');
+        tabs.appendChild(btn);
+      }
+
+      ccState.renderError = null;
+      try {
+        body.replaceChildren(ccTabNode(ccState.tab));
+      } catch (error) {
+        ccState.renderError = String((error && error.message) || error);
+        console.error('[dsh-liquid-glass] 控制中心分页渲染失败（已隔离）：', error);
+        const box = document.createElement('div');
+        box.className = 'cc-degraded cc-err';
+        box.innerHTML = '<b>这个分页出错了</b>'
+          + '<div class="cc-why">' + ccEsc(ccState.renderError) + '</div>'
+          + '<div class="cc-actions">'
+          + '<button type="button" class="cc-btn cc-go" data-cc-act="retry-tab">重试</button>'
+          + '</div>';
+        body.replaceChildren(box);
+      }
+    }
+
+    /* ── 宿主动作（全部经 requestPass 挂钩，不引用 applyGlass 内部量）── */
+
+    async function ccPost(action, payload) {
+      const out = await ccFetchJson(CC_API + '/workspace/' + action, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload || {}),
+      });
+      if (!out.ok) { ccSetNotice('error', ccHumanError(out.error)); return false; }
+      if (out.data && out.data.ok === false) { ccSetNotice('error', ccHumanError(out.data.error)); return false; }
+      return true;
+    }
+
+    async function ccDoWorkspaceAction(kind, id) {
+      if (ccState.busy) return;
+      const list = ccState.workspaces || [];
+      const w = list.find((x) => String(x.id) === String(id)) || { id, name: id, sessionCount: 0 };
+      ccState.busy = true;
+      try {
+        if (kind === 'switch') {
+          const ok = await ccPost('switch', { id });
+          if (ok) {
+            ccSetNotice('ok', '已请求切换到「' + (w.name || id) + '」。');
+            await ccLoadWorkspaces();
+          } else {
+            /* 契约里没有 switch 端点：说人话 + 给退路，别只丢一个「不支持」 */
+            ccSetNotice('error', '宿主还不支持从插件里切换空间，请用 DSH 自己的工作区入口。'
+              + '（这个能力要等宿主把 ' + CC_API + '/workspace/switch 做出来）');
+          }
+        } else if (kind === 'pin') {
+          const ok = await ccPost('pin', { id, pinned: !w.pinned });
+          if (ok) { ccSetNotice('ok', (w.pinned ? '已取消置顶' : '已置顶') + '「' + (w.name || id) + '」'); await ccLoadWorkspaces(); }
+        } else if (kind === 'archive' || kind === 'unarchive') {
+          const ok = await ccPost('archive', { id, archived: kind === 'archive' });
+          if (ok) {
+            ccSetNotice('ok', (kind === 'archive' ? '已归档' : '已取消归档') + '「' + (w.name || id) + '」');
+            await ccLoadWorkspaces();
+          }
+        } else if (kind === 'rename') {
+          const input = document.querySelector('#' + CC_ID + ' [data-cc-rename-input]');
+          const name = input ? String(input.value || '').trim() : '';
+          if (!name) { ccSetNotice('error', '名字不能为空。'); return; }
+          const ok = await ccPost('rename', { id, name });
+          if (ok) {
+            ccSetNotice('ok', '已改名为「' + name + '」');
+            ccState.renamingId = null;
+            await ccLoadWorkspaces();
+          }
+        }
+      } finally {
+        ccState.busy = false;
+        ccState.confirm = null;
+      }
+    }
+
+    async function ccDoCreate() {
+      const wiz = ccState.wizard;
+      if (!wiz || ccState.busy) return;
+      ccState.busy = true;
+      try {
+        const ok = await ccPost('create', { path: wiz.path, name: wiz.name });
+        if (ok) {
+          ccState.wizard = null;
+          ccSetNotice('ok', '空间已创建：' + (wiz.name || wiz.path));
+          await ccLoadWorkspaces();
+        } else if (ccState.notice && ccState.notice.kind === 'error' && ccState.wizard) {
+          /* 把宿主的错误显示在向导里，用户不用抬头找提示 */
+          ccState.wizard.error = ccState.notice.text;
+        }
+      } finally {
+        ccState.busy = false;
+      }
+    }
+
+    /* ── 事件（面板只建一次，全部走委托）──────────────────────── */
+
+    function ccOnClick(event) {
+      const el = ccEl();
+      if (!el || !event || !event.target || !event.target.closest) return;
+
+      const tabBtn = event.target.closest('#' + CC_ID + ' .cc-tabs button');
+      if (tabBtn && tabBtn.dataset.ccTab) {
+        ccState.tab = tabBtn.dataset.ccTab;
+        ccState.notice = null;
+        ccState.renderError = null;
+        if (ccState.tab === 'sessions' && ccState.sessions === null && !ccState.sessionsError) void ccLoadSessions();
+        if (ccState.tab === 'system') void ccLoadHealth();
+        ccRender();
+        return;
+      }
+
+      const act = event.target.closest('[data-cc-act]');
+      if (act) {
+        const a = act.dataset.ccAct;
+        if (a === 'close') { ccClose(); return; }
+        if (a === 'retry-tab') { ccState.renderError = null; ccRender(); return; }
+        if (a === 'retry') {
+          ccCache.health = null; ccCache.healthAt = 0; ccCache.healthTried = 0;
+          ccState.workspaces = null; ccState.workspacesError = null;
+          ccState.sessions = null; ccState.sessionsError = null;
+          ccSetNotice(null, null);
+          void ccLoadHealth(true).then(() => { if (ccIsOpen()) ccRender(); });
+          return;
+        }
+        if (a === 'reload') {
+          ccState.workspaces = null;
+          ccSetNotice(null, null);
+          void ccLoadWorkspaces().then(() => { if (ccIsOpen()) ccRender(); });
+          return;
+        }
+        if (a === 'sort') { ccState.sortAsc = !ccState.sortAsc; ccRender(); return; }
+        if (a === 'show-archived') { ccState.showArchived = !ccState.showArchived; ccRender(); return; }
+        if (a === 'new') {
+          ccState.wizard = { step: 'path', path: '', name: '', error: null };
+          ccSetNotice(null, null);
+          ccRender();
+          return;
+        }
+        if (a === 'reset-pos') {
+          clearPos();
+          el.removeAttribute('style');
+          el.removeAttribute('data-dshlg-moved');
+          delete el.dataset.dshlgMoved;
+          ccRender();
+          return;
+        }
+        if (a === 'reload-health') { ccCache.healthAt = 0; void ccLoadHealth(true).then(() => { if (ccIsOpen()) ccRender(); }); return; }
+        if (a === 'log-report') {
+          try {
+            console.info('[dsh-liquid-glass] 控制中心诊断', {
+              version: VERSION,
+              health: ccState.health,
+              workspaces: ccState.workspaces,
+              sessions: ccState.sessions,
+              viewport: [window.innerWidth, window.innerHeight],
+            });
+            ccSetNotice('ok', '诊断信息已打到控制台（F12 → Console）。');
+          } catch (error) {
+            ccSetNotice('error', String((error && error.message) || error));
+          }
+          ccRender();
+          return;
+        }
+      }
+
+      const wizBtn = event.target.closest('[data-cc-wiz]');
+      if (wizBtn && ccState.wizard) {
+        const k = wizBtn.dataset.ccWiz;
+        if (k === 'cancel') { ccState.wizard = null; ccRender(); return; }
+        if (k === 'back') { ccState.wizard.step = 'path'; ccState.wizard.error = null; ccRender(); return; }
+        if (k === 'path-next') {
+          const input = el.querySelector('[data-cc-wiz-path]');
+          const path = input ? String(input.value || '').trim() : '';
+          if (!path) { ccState.wizard.error = '请填一个目录的绝对路径。'; ccRender(); return; }
+          if (!/^[a-zA-Z]:[\\/]/.test(path) && path.charAt(0) !== '/') {
+            ccState.wizard.error = '看起来不是绝对路径：Windows 上应形如 D:\\目录，Unix 上以 / 开头。';
+            ccRender();
+            return;
+          }
+          ccState.wizard.path = path;
+          ccState.wizard.step = 'name';
+          ccState.wizard.error = null;
+          ccRender();
+          return;
+        }
+        if (k === 'create') {
+          const input = el.querySelector('[data-cc-wiz-name]');
+          ccState.wizard.name = input ? String(input.value || '').trim() : '';
+          void ccDoCreate().then(() => { if (ccIsOpen()) ccRender(); });
+          return;
+        }
+      }
+
+      const cf = event.target.closest('[data-cc-confirm]');
+      if (cf) {
+        if (cf.dataset.ccConfirm === 'no') { ccState.confirm = null; ccRender(); return; }
+        const c = ccState.confirm;
+        if (!c) return;
+        const kind = c.kind;
+        const id = c.id;
+        ccState.confirm = null;
+        void ccDoWorkspaceAction(kind, id).then(() => { if (ccIsOpen()) ccRender(); });
+        return;
+      }
+
+      const ws = event.target.closest('[data-cc-ws]');
+      if (ws) {
+        const kind = ws.dataset.ccWs;
+        const id = ws.dataset.id;
+        if (kind === 'rename') { ccState.renamingId = id; ccState.notice = null; ccRender(); return; }
+        if (kind === 'rename-cancel') { ccState.renamingId = null; ccRender(); return; }
+        if (kind === 'rename-ok') { void ccDoWorkspaceAction('rename', id).then(() => { if (ccIsOpen()) ccRender(); }); return; }
+        if (kind === 'archive' || kind === 'unarchive') {
+          const w = (ccState.workspaces || []).find((x) => String(x.id) === String(id)) || {};
+          ccState.confirm = { kind, id, name: w.name || id, sessions: w.sessionCount || 0 };
+          ccRender();
+          return;
+        }
+        void ccDoWorkspaceAction(kind, id).then(() => { if (ccIsOpen()) ccRender(); });
+      }
+    }
+
+    /** Esc 通道。向导/重命名打开时，Esc 先退那一层而不是整个面板。 */
+    function ccOnKeydown(event) {
+      if (event.key !== 'Escape' && event.key !== 'Esc') return;
+      if (!ccIsOpen()) return;
+      const t = event.target;
+      const inPanel = t && t.closest && t.closest('#' + CC_ID);
+      if (inPanel && (ccState.wizard || ccState.renamingId)) {
+        ccState.wizard = null;
+        ccState.renamingId = null;
+        ccRender();
+      } else {
+        ccClose();
+      }
+      event.preventDefault();
+      event.stopPropagation();
+    }
+
+    /**
+     * 销毁：插件被 dispose 时由 applyGlass 的 cleanup 调用。
+     *
+     * 存在的理由：控制中心在 **document** 上挂了两个捕获监听
+     * （点外部 + Esc），而 cleanup 里那份 id 清单不认识 CC_ID /
+     * CC_BACKDROP_ID，也不会摘 document 级监听 —— 不在这里收拾，
+     * 插件卸载后会留下一对「对着已删节点做事的」全局监听。
+     */
+    function ccTeardown() {
+      try { document.removeEventListener('pointerdown', ccOnOutsidePointer, true); } catch { /* 忽略 */ }
+      try { document.removeEventListener('keydown', ccOnKeydown, true); } catch { /* 忽略 */ }
+      for (const id of [CC_ID, CC_BACKDROP_ID]) {
+        try { document.getElementById(id)?.remove(); } catch { /* 忽略 */ }
+      }
+    }
+
+    /** 输入框里按 Enter = 点同组的确认按钮（键盘用户不用去够鼠标）。 */
+    function ccOnKeydownInner(event) {
+      if (event.key !== 'Enter') return;
+      const t = event.target;
+      if (!t || !t.closest) return;
+      const el = ccEl();
+      if (!el || !el.contains(t)) return;
+      if (t.hasAttribute('data-cc-rename-input')) {
+        const ok = t.closest('.cc-form')?.querySelector('[data-cc-ws="rename-ok"]');
+        if (ok) { event.preventDefault(); ok.click(); }
+        return;
+      }
+      if (t.hasAttribute('data-cc-wiz-path')) {
+        const next = el.querySelector('[data-cc-wiz="path-next"]');
+        if (next) { event.preventDefault(); next.click(); }
+        return;
+      }
+      if (t.hasAttribute('data-cc-wiz-name')) {
+        const create = el.querySelector('[data-cc-wiz="create"]');
+        if (create) { event.preventDefault(); create.click(); }
+      }
+    }
+
+    /** 点外部通道：兜底面 + document 捕获各一条，互为保险。 */
+    function ccOnOutsidePointer(event) {
+      if (!ccIsOpen()) return;
+      const box = ccEl();
+      if (!box) return;
+      const t = event.target;
+      if (t && box.contains(t)) return;
+      if (t && t.closest && t.closest('#' + CTRL_ID + ', #' + GEAR_ID)) return; // 点入口不算外部
+      ccClose();
+    }
+
+    /* ── 开 / 关 ─────────────────────────────────────────────── */
+
+    function ccOpen(tabId) {
+      /* 需要时先建起来 —— 万一入口走的是「齿轮里的按钮」而控制条被收起，
+         这时 ensureControlCenter 可能还没被调过。幂等，重复调没代价。 */
+      if (!ccEl()) ensureControlCenter();
+      const el = ccEl();
+      if (!el) return false;
+      if (tabId) ccState.tab = tabId;
+      try { ccState.lastFocus = document.activeElement; } catch { ccState.lastFocus = null; }
+      el.setAttribute('data-dshlg-cc-open', '');
+      el.removeAttribute('hidden');
+      const back = document.getElementById(CC_BACKDROP_ID);
+      if (back) back.setAttribute('data-dshlg-cc-open', '');
+      ccState.wizard = null;
+      ccState.confirm = null;
+      ccState.renderError = null;
+      ccRender();
+      void ccLoadHealth().then(() => { if (ccIsOpen() && ccState.tab === 'system') ccRender(); });
+      /* 焦点：落在第一个控件（不是整个面板），键盘用户 Tab 一下就能走 */
+      requestAnimationFrame(() => {
+        try {
+          const first = el.querySelector('.cc-tabs button') || el.querySelector('button');
+          if (first && typeof first.focus === 'function') first.focus({ preventScroll: true });
+        } catch { /* 忽略 */ }
+      });
+      return true;
+    }
+
+    function ccClose() {
+      const el = ccEl();
+      if (!el) return false;
+      el.removeAttribute('data-dshlg-cc-open');
+      el.setAttribute('hidden', '');
+      const back = document.getElementById(CC_BACKDROP_ID);
+      if (back) back.removeAttribute('data-dshlg-cc-open');
+      ccState.wizard = null;
+      ccState.confirm = null;
+      ccState.renamingId = null;
+      const prev = ccState.lastFocus;
+      ccState.lastFocus = null;
+      requestAnimationFrame(() => {
+        try {
+          if (prev && prev.isConnected && typeof prev.focus === 'function') prev.focus({ preventScroll: true });
+          else {
+            const g = document.getElementById(GEAR_ID);
+            if (g && typeof g.focus === 'function') g.focus({ preventScroll: true });
+          }
+        } catch { /* 忽略 */ }
+      });
+      return false;
+    }
+
+    function ccToggle(tabId) {
+      return ccIsOpen() ? ccClose() : ccOpen(tabId);
+    }
+
+    /**
+     * 建面板（幂等）。只在第一次真正建 DOM + 挂监听。
+     * 面板本体不做 backdrop-filter（见控制中心材质的注释）。
+     */
+    function ensureControlCenter() {
+      let el = ccEl();
+      if (!el) {
+        let back = document.getElementById(CC_BACKDROP_ID);
+        if (!back) {
+          back = document.createElement('div');
+          back.id = CC_BACKDROP_ID;
+          back.dataset.dshlgKeep = '1';
+          back.setAttribute('aria-hidden', 'true');
+          /* 点外部通道 1：兜底面独立覆盖整个视口，最容易命中 */
+          back.addEventListener('pointerdown', (event) => {
+            const t = event.target;
+            const box = ccEl();
+            if (t && t.closest && t.closest('#' + CTRL_ID + ', #' + GEAR_ID)) return;
+            if (box && t && box.contains(t)) return;
+            if (ccIsOpen()) ccClose();
+          });
+          document.body.appendChild(back);
+        }
+
+        el = document.createElement('div');
+        el.id = CC_ID;
+        el.dataset.dshlgKeep = '1';
+        el.setAttribute('hidden', '');
+        el.setAttribute('role', 'dialog');
+        el.setAttribute('aria-modal', 'false');
+        el.setAttribute('aria-label', '控制中心');
+        el.innerHTML = '<div class="cc-head"><b>控制中心</b><span class="grow"></span>'
+          + '<button type="button" data-cc-act="reset-pos">重置位置</button>'
+          + '<button type="button" data-cc-act="close">关闭</button></div>'
+          + '<div class="cc-tabs" role="tablist"></div>'
+          + '<div class="cc-body"></div>';
+        el.addEventListener('click', ccOnClick);
+        el.addEventListener('keydown', ccOnKeydownInner);
+        document.body.appendChild(el);
+
+        /* 点外部通道 2：document 捕获。兜底面可能被别的浮层盖住 / 被 pointer-events 挡住 */
+        document.addEventListener('pointerdown', ccOnOutsidePointer, true);
+        /* 关闭通道 3：Esc。挂 document 捕获，面板没聚焦也能关 */
+        document.addEventListener('keydown', ccOnKeydown, true);
+
+        /* 拖动 + 位置记忆：直接复用项目里成熟的那两个（不重写）。
+           注意 makeDraggable 的约定：位置写在 **left / bottom** 上
+           （见 applySavedPos / savePos），所以面板的 CSS 必须用
+           left + bottom 定位，**不能**用 top/transform 居中 ——
+           否则拖动时 top 与 bottom 会同时生效，面板被抻成一条。
+           回调签名是 onMoved(el)，不是 onMoved(pos)。 */
+        try {
+          makeDraggable(el, CC_POS_KEY, (node) => {
+            if (node) node.setAttribute('data-dshlg-moved', '');
+          });
+          applySavedPos(el, CC_POS_KEY);
+        } catch (error) {
+          console.warn('[dsh-liquid-glass] 控制中心拖动初始化失败（不影响打开/关闭）：', error);
+        }
+      }
+      ccRender();
+      return el;
+    }
+
     /* ══════════════════════════════════════════════════════════
      *  ★ 改这里调效果。存盘后按 Ctrl+R 生效。
      *
@@ -2440,6 +3365,199 @@ ${glassVars(theme, modal.alpha, modal.frost, cardRefract)}
 }
 #${SETTINGS_ID} input[type='text']::placeholder { color: currentColor; opacity: 0.5; }
 
+/* ══ 控制中心（复用控制条 / 设置面板同一套材质）══════════════════
+   不新增色调变量：全部来自 --dshlg-bar-tone（冰钻蓝白）与
+   --dshlg-panel-veil / --dshlg-panel-ink（由 adaptPanelReadability 写）。
+   刻意不做 backdrop-filter：动画壁纸下会闪，且会变成 fixed 后代的包含块。
+   定位用 left + bottom（和设置面板/控制条同一约定）—— 拖动复用
+   makeDraggable，它只写 left/bottom，用 top/transform 居中会被抻变形。 */
+#${CC_ID} {
+  --dshlg-bar-tone: 125, 211, 252;
+  position: fixed;
+  left: 18px;
+  bottom: 96px;
+  z-index: 2147483001;
+  display: none;
+  flex-direction: column;
+  width: min(760px, calc(100vw - 36px));
+  height: min(560px, calc(100vh - 120px));
+  font: 13px/1.5 "Segoe UI", system-ui, "Microsoft YaHei", sans-serif;
+  color: var(--dshlg-panel-ink, ${dark ? '#ff9ecb' : '#8a1046'});
+  text-shadow: ${dark ? '0 1px 2px rgba(0, 0, 0, 0.6)' : '0 1px 1px rgba(255, 255, 255, 0.55)'};
+  background: var(--dshlg-panel-veil, rgba(var(--dshlg-bar-tone), ${dark ? 0.06 : 0.08}));
+  border: 1px solid rgba(var(--dshlg-bar-tone), ${dark ? 0.55 : 0.85});
+  border-radius: 18px;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, ${dark ? 0.55 : 0.95}),
+    0 12px 34px rgba(var(--dshlg-bar-tone), 0.35),
+    0 18px 48px rgba(0, 0, 0, ${dark ? 0.5 : 0.2});
+  overflow: hidden;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+#${CC_ID}[data-dshlg-cc-open] { display: flex; }
+#${CC_ID}[hidden] { display: none; }
+/* 面板外部的点击兜底面：只负责接住「点外部」这一下。
+   刻意不铺任何底色 —— 铺了就等于给整页加一层幕布，和「全透」冲突。 */
+#${CC_BACKDROP_ID} {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483000;
+  display: none;
+  background: transparent;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+#${CC_BACKDROP_ID}[data-dshlg-cc-open] { display: block; }
+#${CC_ID} .cc-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.14);
+  cursor: grab;
+}
+#${CC_ID} .cc-head b { font-size: 14px; font-weight: 600; letter-spacing: .02em; }
+#${CC_ID} .cc-head .grow { flex: 1; }
+#${CC_ID} .cc-head button {
+  font: inherit;
+  padding: 4px 10px;
+  cursor: pointer;
+  color: inherit;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(var(--dshlg-bar-tone), 0.6);
+  border-radius: 8px;
+}
+#${CC_ID} .cc-head button:hover { background: rgba(255, 255, 255, 0.22); }
+#${CC_ID} .cc-tabs {
+  display: flex;
+  gap: 6px;
+  padding: 8px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+}
+#${CC_ID} .cc-tabs button {
+  font: inherit;
+  padding: 5px 14px;
+  cursor: pointer;
+  color: inherit;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(var(--dshlg-bar-tone), 0.45);
+  border-radius: 9px;
+}
+#${CC_ID} .cc-tabs button:hover { background: rgba(255, 255, 255, 0.18); }
+#${CC_ID} .cc-tabs button.is-on {
+  background: rgba(255, 255, 255, 0.3);
+  border-color: rgba(var(--dshlg-bar-tone), 0.95);
+  font-weight: 600;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
+}
+#${CC_ID} .cc-tabs button:focus-visible,
+#${CC_ID} .cc-head button:focus-visible,
+#${CC_ID} .cc-btn:focus-visible {
+  outline: 2px solid rgba(var(--dshlg-bar-tone), 0.95);
+  outline-offset: 1px;
+}
+#${CC_ID} .cc-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px 14px 16px;
+}
+#${CC_ID} .cc-sec { margin-bottom: 14px; }
+#${CC_ID} .cc-sec > h4 {
+  margin: 0 0 8px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: .06em;
+  opacity: .78;
+}
+#${CC_ID} .cc-btn {
+  font: inherit;
+  padding: 4px 11px;
+  cursor: pointer;
+  color: inherit;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(var(--dshlg-bar-tone), 0.6);
+  border-radius: 8px;
+}
+#${CC_ID} .cc-btn:hover:not(:disabled) { background: rgba(255, 255, 255, 0.22); }
+#${CC_ID} .cc-btn:disabled { opacity: .45; cursor: not-allowed; }
+#${CC_ID} .cc-btn.cc-go { border-color: rgba(var(--dshlg-bar-tone), 0.95); font-weight: 600; }
+#${CC_ID} .cc-btn.cc-danger { border-color: rgba(248, 113, 113, 0.9); color: ${dark ? '#fecaca' : '#7f1d1d'}; }
+#${CC_ID} .cc-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 11px;
+  margin-bottom: 7px;
+}
+#${CC_ID} .cc-row.is-current {
+  border-color: rgba(var(--dshlg-bar-tone), 0.95);
+  background: rgba(255, 255, 255, 0.14);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.5);
+}
+#${CC_ID} .cc-row .cc-main { flex: 1; min-width: 0; }
+#${CC_ID} .cc-row .cc-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#${CC_ID} .cc-row .cc-path {
+  opacity: .7;
+  font-size: 11.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#${CC_ID} .cc-row .cc-meta { display: flex; align-items: center; gap: 5px; flex: none; flex-wrap: wrap; justify-content: flex-end; max-width: 45%; }
+#${CC_ID} .cc-chip {
+  font-size: 11px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid rgba(var(--dshlg-bar-tone), 0.55);
+  background: rgba(255, 255, 255, 0.08);
+  white-space: nowrap;
+}
+#${CC_ID} .cc-chip.cc-cur { border-color: rgba(var(--dshlg-bar-tone), 0.95); font-weight: 600; }
+#${CC_ID} .cc-chip.cc-warn { border-color: rgba(250, 204, 21, 0.8); }
+#${CC_ID} .cc-chip.cc-bad { border-color: rgba(248, 113, 113, 0.85); }
+#${CC_ID} .cc-note,
+#${CC_ID} .cc-empty,
+#${CC_ID} .cc-degraded {
+  padding: 10px 12px;
+  border-radius: 11px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.06);
+}
+#${CC_ID} .cc-degraded { border-color: rgba(250, 204, 21, 0.7); }
+#${CC_ID} .cc-degraded .cc-why { opacity: .78; font-size: 12px; margin-top: 4px; word-break: break-all; }
+#${CC_ID} .cc-actions { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; align-items: center; }
+#${CC_ID} .cc-confirm {
+  margin-top: 8px;
+  padding: 10px 12px;
+  border-radius: 11px;
+  border: 1px solid rgba(250, 204, 21, 0.75);
+  background: rgba(250, 204, 21, 0.12);
+}
+#${CC_ID} .cc-form { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+#${CC_ID} .cc-form label { font-size: 12px; opacity: .8; }
+#${CC_ID} .cc-form input[type='text'] {
+  font: inherit;
+  padding: 5px 9px;
+  color: inherit;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(var(--dshlg-bar-tone), 0.55);
+  border-radius: 8px;
+}
+#${CC_ID} .cc-form input[type='text']::placeholder { color: currentColor; opacity: .5; }
+#${CC_ID} .cc-kv { display: flex; gap: 8px; padding: 4px 0; border-top: 1px solid rgba(255, 255, 255, 0.1); }
+#${CC_ID} .cc-kv .k { flex: none; width: 150px; opacity: .8; }
+#${CC_ID} .cc-kv .v { flex: 1; min-width: 0; word-break: break-all; }
+#${CC_ID} .cc-note.cc-err { border-color: rgba(248, 113, 113, 0.85); }
+#${CC_ID} .cc-note.cc-ok { border-color: rgba(var(--dshlg-bar-tone), 0.85); }
+#${CC_ID} .cc-tail { opacity: .62; font-size: 11.5px; margin-top: 6px; }
+/* 壁纸很亮时，这些面板和设置面板一样需要深字（沿用同一套覆盖） */
+html[data-dshlg-bright-wall] #${CC_ID},
+html[data-dshlg-bright-wall] #${CC_ID} * { color: #1a1030; text-shadow: 0 1px 1px rgba(255, 255, 255, 0.6); }
+
 @keyframes dshlg-restore-glow {
   0%, 100% { filter: brightness(1); }
   50% { filter: brightness(1.22); }
@@ -3562,6 +4680,21 @@ ${glassVars(theme, modal.alpha, modal.frost, cardRefract)}
 
       const hide = document.createElement('button');
       hide.type = 'button';
+      /* 控制中心入口：复用控制条这个既有控件，不新增悬浮件。
+         事件仍走下面那个委托，只是多认一个 role。
+         标签用紧凑字形：控制条已经很长，四字按钮会把齿轮挤出去。 */
+      const ccBtn = document.createElement('button');
+      ccBtn.type = 'button';
+      ccBtn.dataset.role = 'control-center';
+      ccBtn.textContent = '⊞';
+      ccBtn.title = '控制中心：工作区管理 / 会话巡检 / 插件 / 系统';
+      ccBtn.setAttribute('aria-label', '控制中心');
+      el.appendChild(ccBtn);
+
+      const ccSep = document.createElement('span');
+      ccSep.className = 'sep';
+      el.appendChild(ccSep);
+
       hide.dataset.role = 'hide';
       hide.textContent = '收起';
       hide.title = '隐藏这条控制栏（改 CONFIG.wallpaper.controls 可恢复）';
@@ -3576,6 +4709,9 @@ ${glassVars(theme, modal.alpha, modal.frost, cardRefract)}
         const role = btn.dataset.role;
         if (role === 'audio') {
           onCommand('audio-toggle');
+        } else if (role === 'control-center') {
+          ensureControlCenter();
+          ccToggle();
         } else if (role === 'hide') {
           setControlsHidden(true);          // 记住，别让下一遍 pass 又建回来
           el.remove();
@@ -4661,6 +5797,9 @@ const paintBrand = (column, put) => {
          */
         const onResize = () => {
           if (disposed) return;
+          /* 窗口一变，cover 语义下的可见区就变了 —— 亮度缓存只按 id 记，
+             不作废就会拿着一块区域的亮度去算另一块的可读性。 */
+          wallLum.id = null;
           /* 面板开着时，布局一变背后的内容就变了 → 重新判断可读性 */
           setTimeout(() => { try { adaptPanelReadability(); positionGear(); } catch { /* 忽略 */ } }, 120);
           if (timer !== null) clearTimeout(timer);
@@ -4701,6 +5840,7 @@ const paintBrand = (column, put) => {
           if (pointerRaf !== null) cancelAnimationFrame(pointerRaf);
           if (observer) observer.disconnect();
           if (timer !== null) clearTimeout(timer);
+          ccTeardown();
           untagAll();
           document.querySelectorAll('[data-dshlg-region]').forEach((el) => delete el.dataset.dshlgRegion);
           for (const id of [STYLE_ID, STYLE_ID_DYN, STYLE_LINK_ID, SVG_ID, BG_ID, WALL_ID, CTRL_ID, GALLERY_ID, RESTORE_ID, FADE_TOP_ID, FADE_BOTTOM_ID, SAPPHIRE_ID, SETTINGS_ID, GEAR_ID, BANNER_ID]) {
