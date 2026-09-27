@@ -1853,44 +1853,14 @@ body[data-ds-dark-theme] #root [data-menu-material] {
    按**稳定语义后缀**命中（DSH 的类名是模块哈希 + 语义后缀，后缀稳定），
    并给一块与主题配对的实色板；字色交给 DSH 自己的令牌，
    所以「浅底配深字 / 深底配浅字」天然成立，不会出现白底白字。 */
-/* 元素本身保持透明，玻璃画在 ::before 上（见下方注释）。 */
 [class*='_overlay'],
 [class*='_scrim'] {
-  background-color: transparent !important;
+  background-color: var(--dshlg-plate-bg, rgba(250, 251, 253, 0.97)) !important;
   background-image: none !important;
 }
-/* 半透 + 模糊的玻璃质感：
-   · 模糊（backdrop-filter）只加在伪元素上 —— 加在覆盖层元素本身会成为
-     fixed 后代的包含块，把 DSH 设置面板的 fixed 布局打乱；
-   · 纱也画在伪元素上，顺序才是「先模糊背景、再叠纱」，
-     否则纱在模糊之上会被一并糊白，等于没透。 */
-[class*='_overlay']::before,
-[class*='_scrim']::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  z-index: -1;                       /* 覆盖层自带 z-index:1001，会形成层叠上下文，安全 */
-  pointer-events: none;
-  background-color: var(--dshlg-plate-veil, rgba(250, 251, 253, 0.72));
-  backdrop-filter: blur(22px) saturate(1.45);
-  -webkit-backdrop-filter: blur(22px) saturate(1.45);
-}
-body[data-ds-dark-theme] [class*='_overlay']::before,
-body[data-ds-dark-theme] [class*='_scrim']::before {
-  background-color: var(--dshlg-plate-veil-dark, rgba(17, 21, 29, 0.76));
-}
-/* 减少透明度偏好下退回实色（无障碍要求「不透明」时别硬上玻璃） */
-@media (prefers-reduced-transparency: reduce) {
-  [class*='_overlay']::before,
-  [class*='_scrim']::before {
-    background-color: rgba(250, 251, 253, 0.98) !important;
-    backdrop-filter: none !important;
-    -webkit-backdrop-filter: none !important;
-  }
-  body[data-ds-dark-theme] [class*='_overlay']::before,
-  body[data-ds-dark-theme] [class*='_scrim']::before {
-    background-color: rgba(19, 23, 31, 0.98) !important;
-  }
+body[data-ds-dark-theme] [class*='_overlay'],
+body[data-ds-dark-theme] [class*='_scrim'] {
+  background-color: var(--dshlg-plate-bg-dark, rgba(19, 23, 31, 0.98)) !important;
 }
 /* 覆盖层里通常还有一层内层「面板」，一并给底，避免只有边缘实、内容区透 */
 [class*='_overlay'] [class*='_panel'],
