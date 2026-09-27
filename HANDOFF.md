@@ -76,7 +76,29 @@ ccState.workspaces = Array.isArray(out.data) ? out.data : [];   // client.js:248
 **修法二选一**：① 把 X1 改成带 `@@OLD` 锚点的普通补丁；② 调整补丁顺序让非 NEWONLY 的打头。
 （`cc4-patch.mjs` 已由 Lead 生成 = `cc2-patch.mjs` 的副本 + 换 FILES 列表，含「`'@END'`→`'@@END'`」与「纯删除补丁幂等判据」两处 bug fix。）
 
-### 埋点落地后，让用户刷新（F5）再点一次，然后要这三行 console：
+### ⚠️ cc4 落地实测结果（Lead 代跑，2026-09-27 收尾时）
+```
+node cc4-patch.mjs --check
+  解析补丁 9 条（cc4-patch.txt）
+  目标 client.js（LF，225201 字节）
+  锚点唯一：X1 / X2 / X3 / X4          ← 前四条通过
+  ✗ 锚点找不到：X5 ccRender 外包一层   ← 卡在这里，落地器全有或全无
+```
+**X1 的 `@@NEWONLY` 首位问题已由 verifier 改成带 `@@OLD` 的普通补丁（插入点 `client.js:88–89`），已通过。**
+**剩余卡点：X5 的锚点与实际文件不匹配**（X6–X9 还没轮到验）。
+→ **修法**：把 X5 的 `@@OLD` 换成从当前 `client.js` 里**逐字读出来**的 `ccRender` 开头（**不要手打** —— 本项目已因手打锚点漂移卡住过 4 次：6/7 空格、8/10 空格、中间夹 5 行注释、17 行块）。
+→ 可复用 Lead 写的对比工具 `D:\dev-cache\temp\anchor-diff.mjs`（打印每条 `@@OLD` 的匹配次数与首个差异码点）。
+
+### ⚠️ 两条来自 verifier 的重要提示（务必看）
+1. **`ccApi()` 的回落路径是个隐患**：`client.js:97–101`，端口没探到时回落到 `CC_API_FALLBACK = '/dshlg-control'`（同源相对路径）→ **必然 404**。而 `ccPort` 只在 **`client.js:5376`**（applyGlass 的 `findWallpaper` 里）被赋值。
+   → 面板能出数据的前提是：**`ccPort` 已赋值 且 宿主 `/__alive` 的 `features` 含 `control`**。
+   → 为一版更稳的**三态能力判定**（`pending` / `no_service` / `no_control`，不满足就**先不发请求**、直接给可操作降级页）**没有落地**，草稿在 `lg-verify\cc3-patch-js1.txt`（8 条，锚点是 6010 行版本，**需重新对锚**）。若接手的会话遇到用户报「控制服务未连接」，**八成就是这个回落路径**。
+2. **⛔ 本轮所有对 `client.js` 的诊断都只有「静态证据」** —— verifier 没有 shell、**没跑过一次测试、没截过图**；`window.__DSHLG_CC_ERR` / `__DSHLG_CC_LAST` 正是**为了把「猜」变成「测」**才加的埋点。
+   **不要把 verifier 的推理当成实测结论。** 宿主侧（`index.js` / `/dshlg-control/*`）的结论**是 Lead 实测的**（带 Origin 的 HTTP 请求），可信。
+
+### 落地后的两个观察点
+1. **「共 N 个」应该变成 `2`**（宿主实测：`AI应用` + 默认工作区）→ 直接验证 X6 的形状修复
+2. 点击若仍无反应 → 三行 console（见下）
 ```js
 JSON.stringify(window.__DSHLG_CC_ERR)     // 有没有抛、抛在哪
 JSON.stringify(window.__DSHLG_CC_LAST)    // handler 到底进没进
