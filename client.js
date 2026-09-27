@@ -174,7 +174,10 @@ window.__ModuleLoader__.load({
       composerGlass: { alpha: null, frost: 0 },
 
       /* 下拉菜单、popover、菜单面板。菜单要读得快，底厚一点。 */
-      overlayGlass: { alpha: null, frost: null },   // 与其他面同档（0.138），不再单独加厚
+      /* ⚠️ 弹窗/菜单/popover 是**可读卡片**，不是结构性窗格，不能跟着 α0.138 走。
+         上一轮「六面统一」把它们一起压薄，导致 DSH 自己的设置对话框变成全透明、
+         文字与工作区重叠看不清 —— 这是那个问题的根因。这里恢复厚底。 */
+      overlayGlass: { alpha: 0.74, frost: null },
 
       /* 审批对话框（「等待审批 / 允许一次」那张卡）。
        * 浮在对话流里，必须压得住标题与命令，但仍要透出壁纸。 */
@@ -1799,6 +1802,49 @@ html[data-dshlg-bright-wall] #dshlg-settings * {
   text-shadow: none !important;
 }
 
+
+/* ══ 弹窗/设置面板必须是**可读卡片**，不能全透明 ══════════════════
+   结构性窗格（左右侧栏、输入栏）走全透明是设计定调；
+   但弹窗、菜单、设置对话框是「浮在内容之上的可读面」——
+   全透明会让它和背后的工作区文字叠在一起，两边都读不了。
+   这里给它们一层真正的板（不是玻璃纱），保证字读得出。 */
+#root [role='dialog'],
+#root [role='dialog'] *,
+#root [data-menu-material] {
+  --dshlg-plate: 1;
+}
+#root [role='dialog'] {
+  background-color: rgba(var(--dshlg-tone, 255, 255, 255), 0.88) !important;
+  background-image: none !important;
+  backdrop-filter: var(--dshlg-filter-plate, blur(18px) saturate(1.5)) !important;
+  -webkit-backdrop-filter: var(--dshlg-filter-plate, blur(18px) saturate(1.5)) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.5),
+    0 24px 64px rgba(0, 0, 0, 0.42) !important;
+  border: 1px solid rgba(255, 255, 255, 0.28) !important;
+}
+/* 深色主题下用深板，否则白板刺眼 */
+body[data-ds-dark-theme] #root [role='dialog'] {
+  background-color: rgba(24, 28, 38, 0.9) !important;
+  border-color: rgba(255, 255, 255, 0.14) !important;
+}
+/* 厚底上的字必须是深色（深色主题下保持浅色）——底与字绑成一个决策 */
+#root [role='dialog'],
+#root [role='dialog'] * {
+  color: #16233a !important;
+}
+body[data-ds-dark-theme] #root [role='dialog'],
+body[data-ds-dark-theme] #root [role='dialog'] * {
+  color: #eaf0fa !important;
+}
+/* 菜单/popover 同样给足底 */
+#root [data-menu-material] {
+  background-color: rgba(var(--dshlg-tone, 255, 255, 255), 0.9) !important;
+}
+body[data-ds-dark-theme] #root [data-menu-material] {
+  background-color: rgba(26, 30, 40, 0.92) !important;
+}
+
 /* ══ 可读性：正文 1px 描影（借鉴 Aqua）════════════════════════
    全透明背景下文字边缘直接贴着壁纸，容易糊边。
    1px 描影把字边缘的背景压住一点，是最省事的可读性提升。 */
@@ -3330,8 +3376,25 @@ ${glassVars(theme, modal.alpha, modal.frost, cardRefract)}
       try { bg = sampleBackdrop(r.left, r.top, r.width, r.height); }
       finally { panel.style.visibility = prevVis; }
 
-      /* 背后亮/花 → 需要更厚的底 */
-      const needOpaque = bg.mean > 0.55 || bg.spread > 0.3 || bg.unknown;
+      /* 背后亮/花/**有文字** → 必须上厚底。
+         ⚠️ 之前的判据只看亮度：背后是文字时 elementsFromPoint 读不到不透明底色，
+         mean 落在中性 0.5 → 判定「不需要厚底」→ 选了「很透 + 深字」，
+         结果面板文字与背后文字叠在一起，两边都看不清（用户反馈的就是这个）。
+         现在：只要检测到背后有可见文字，就一律上厚底。 */
+      const textBehind = (() => {
+        try {
+          const px = Math.round(r.left + r.width / 2);
+          const py = Math.round(r.top + Math.min(40, r.height / 2));
+          const stack = document.elementsFromPoint(px, py) || [];
+          for (const el of stack) {
+            if (!el || el.closest?.('#' + SETTINGS_ID)) continue;
+            const t = (el.textContent || '').trim();
+            if (t.length >= 2 && el.children.length === 0) return true;   // 叶子节点带文字
+          }
+        } catch { /* 忽略 */ }
+        return false;
+      })();
+      const needOpaque = textBehind || bg.mean > 0.5 || bg.spread > 0.2 || bg.unknown;
       const darkInk = needOpaque;                 // 厚底配深字，薄底配浅字
 
       /* 底色：先用一档初值，再按对比度反推是否需要更厚 */
@@ -3339,7 +3402,9 @@ ${glassVars(theme, modal.alpha, modal.frost, cardRefract)}
       const inkRgb = darkInk ? [74, 13, 43] : [255, 208, 230];
       const inkLum = relLuminance(inkRgb[0], inkRgb[1], inkRgb[2]);
 
-      let alpha = needOpaque ? 0.6 : 0.08;
+      /* 需要厚底时**从 0.78 起**：0.6 在文字背景上仍会透出后面的字。
+         薄底档保持 0.08（背后是纯色/暗背景时不影响观感）。 */
+      let alpha = needOpaque ? 0.78 : 0.08;
       for (let i = 0; i < 8; i += 1) {
         /* 合成色 = 底色 × a + 背后色 × (1-a)。背后色按平均亮度还原成灰。 */
         const base = bg.mean * 255;
@@ -3354,6 +3419,7 @@ ${glassVars(theme, modal.alpha, modal.frost, cardRefract)}
       panel.style.setProperty('--dshlg-panel-ink', `rgb(${inkRgb.join(', ')})`);
       panel.dataset.dshlgPanelFit = darkInk ? 'dark-ink' : 'light-ink';
       panel.dataset.dshlgPanelBg = bg.mean.toFixed(2) + '/' + bg.spread.toFixed(2);
+      panel.dataset.dshlgTextBehind = textBehind ? '1' : '0';
       return { bg, alpha, darkInk };
     }
 
