@@ -86,6 +86,31 @@ window.__ModuleLoader__.load({
     const CC_ID = 'dshlg-cc';                   // 面板本体
     const CC_BACKDROP_ID = 'dshlg-cc-backdrop'; // 面板外部的点击兜底面
     const CC_POS_KEY = 'cc';                    // 位置记忆键（与 'bar' / 'gear' 同一套）
+
+    /* ══ 控制中心错误埋点 ═══════════════════════════════════════════
+      用户报「点任何位置都没反应（包括关闭）」—— 本项目有「静默异常」前科：
+      模块级函数引用了 applyGlass 内部的标识符、或只插了调用没插定义，
+      都会让点击 handler 一进去就抛，表现就是「点了像没点」。
+      这里把四个入口都包起来，错误落到 window.__DSHLG_CC_ERR（**不冒到
+      window**，否则 settings.test.mjs 的「插件无异常」会变红）。
+      同时记 where / when / target / count，便于判断是哪一个入口。 */
+    const ccErr = { count: 0, where: '—', message: '', stack: '', when: '', target: '' };
+    try { window.__DSHLG_CC_ERR = ccErr; } catch { /* 忽略 */ }
+    function ccNoteError(where, error, event) {
+      ccErr.count += 1;
+      ccErr.where = where;
+      ccErr.message = String((error && error.message) || error);
+      ccErr.stack = String((error && error.stack) || '').split('\n').slice(0, 6).join(' | ');
+      ccErr.when = new Date().toISOString();
+      try {
+        const t = event && event.target;
+        ccErr.target = t ? (t.tagName || '?') + (t.className && typeof t.className === 'string' ? '.' + t.className.split(' ')[0] : '')
+          + (t.dataset && t.dataset.ccAct ? '[act=' + t.dataset.ccAct + ']' : '')
+          + (t.dataset && t.dataset.ccWs ? '[ws=' + t.dataset.ccWs + ']' : '') : '—';
+      } catch { ccErr.target = '?'; }
+      try { console.error('[dsh-liquid-glass] 控制中心 ' + where + ' 失败：', error); } catch { /* 忽略 */ }
+    }
+
     /* 控制中心 API 基址。
        ⚠️ 千万不能用同源相对路径：DSH 页面的同源服务器上没有这个路由
        （用户实测面板显示「控制服务未连接 · HTTP 404」）。
@@ -231,11 +256,33 @@ window.__ModuleLoader__.load({
             ok: out.data && out.data.ok !== false,
             version: out.data && out.data.version,
             services: (out.data && out.data.services) || {},
+            /* 宿主会挑出不可用的官方服务名，直接透出去给「系统」页显示
+               （实测 /dshlg-control/health 顶层字段含 degraded 与 carrier） */
+            degraded: Array.isArray(out.data && out.data.degraded) ? out.data.degraded : [],
+            carrier: (out.data && out.data.carrier) || '',
           }
         : { ok: false, error: out.error };
       ccCache.healthAt = Date.now();
       ccState.health = ccCache.health;
       return ccCache.health;
+    }
+
+    /**
+     * 把「宿主返回体」里的数组取出来。
+     *
+     * 宿主的路由统一是 { ok, ...payload } 的形状（health / workspaces /
+     * sessions 都是），数组在 payload 的某个字段里，**不是**顶层数组。
+     * 这里做容错：数组直接用；对象按已知字段名依次试。
+     * 找不到就返回 null，让调用方走「形状不认识」的降级提示 —— 而不是
+     * 静默变成空列表（上一版就是这样：页面显示「共 0 个」，而宿主明明有 2 个）。
+     */
+    function ccPickArray(data, keys) {
+      if (Array.isArray(data)) return data;
+      if (!data || typeof data !== 'object') return null;
+      for (const k of keys) {
+        if (Array.isArray(data[k])) return data[k];
+      }
+      return null;
     }
 
     async function ccLoadWorkspaces() {
@@ -245,7 +292,13 @@ window.__ModuleLoader__.load({
         ccState.workspacesError = out.error;
         return null;
       }
-      ccState.workspaces = Array.isArray(out.data) ? out.data : [];
+      const list = ccPickArray(out.data, ['workspaces', 'items', 'list', 'data', 'rows']);
+      if (list === null) {
+        ccState.workspaces = null;
+        ccState.workspacesError = { code: 'bad_shape', message: '返回体里找不到工作区数组（顶层字段：' + Object.keys(out.data || {}).join(', ') + '）' };
+        return null;
+      }
+      ccState.workspaces = list;
       ccState.workspacesError = null;
       return ccState.workspaces;
     }
@@ -257,7 +310,13 @@ window.__ModuleLoader__.load({
         ccState.sessionsError = out.error;
         return null;
       }
-      ccState.sessions = Array.isArray(out.data) ? out.data : [];
+      const list = ccPickArray(out.data, ['sessions', 'items', 'list', 'data', 'rows']);
+      if (list === null) {
+        ccState.sessions = null;
+        ccState.sessionsError = { code: 'bad_shape', message: '返回体里找不到会话数组（顶层字段：' + Object.keys(out.data || {}).join(', ') + '）' };
+        return null;
+      }
+      ccState.sessions = list;
       ccState.sessionsError = null;
       return ccState.sessions;
     }
@@ -569,7 +628,11 @@ window.__ModuleLoader__.load({
           + '<div class="cc-kv"><span class="k">宿主版本</span><span class="v">' + ccEsc(h.version || '(未上报)') + '</span></div>'
           + '<div class="cc-kv"><span class="k">服务</span><span class="v">'
           + (keys.length ? keys.map((k) => ccEsc(k) + (svc[k] ? ' ✓' : ' ✗')).join('　') : '（宿主没有上报服务清单）')
-          + '</span></div>'));
+          + '</span></div>'
+          + '<div class="cc-kv"><span class="k">不可用服务</span><span class="v">'
+          + ccEsc((h.degraded && h.degraded.length) ? h.degraded.join('　') : '无') + '</span></div>'
+          + '<div class="cc-kv"><span class="k">接口载体</span><span class="v">'
+          + ccEsc(h.carrier || ccApi()) + '</span></div>'));
       }
 
       frag.appendChild(ccShell('应用',
@@ -608,6 +671,18 @@ window.__ModuleLoader__.load({
      * 这里刻意自己 try/catch，绝不让异常冒到 window.onerror。
      */
     function ccRender() {
+      try {
+        return ccRenderInner();
+      } catch (error) {
+        /* 这一层很关键：ccRender 开头那段（取 body/tabs、算签名、建 tab 按钮）
+           原来**没有**保护，那里一旦抛，整个点击就静默死掉。
+           注意这里不要引用 flk()：本项目没有这个函数（曾因此差点插进来）。 */
+        ccNoteError('ccRender', error, null);
+        return undefined;
+      }
+    }
+
+    function ccRenderInner() {
       const el = ccEl();
       if (!el) return;
       const body = el.querySelector('.cc-body');
@@ -731,8 +806,21 @@ window.__ModuleLoader__.load({
     /* ── 事件（面板只建一次，全部走委托）──────────────────────── */
 
     function ccOnClick(event) {
+      try {
+        return ccOnClickInner(event);
+      } catch (error) {
+        ccNoteError('ccOnClick', error, event);
+        return undefined;
+      }
+    }
+
+    function ccOnClickInner(event) {
       const el = ccEl();
       if (!el || !event || !event.target || !event.target.closest) return;
+      /* 回执：handler 真的进来了就留痕（判断「点了没反应」时先看这个） */
+      try {
+        window.__DSHLG_CC_LAST = { at: Date.now(), target: String(event.target.tagName || '') };
+      } catch { /* 忽略 */ }
 
       const tabBtn = event.target.closest('#' + CC_ID + ' .cc-tabs button');
       if (tabBtn && tabBtn.dataset.ccTab) {
@@ -947,6 +1035,15 @@ window.__ModuleLoader__.load({
 
     /** 点外部通道：兜底面 + document 捕获各一条，互为保险。 */
     function ccOnOutsidePointer(event) {
+      try {
+        return ccOnOutsidePointerInner(event);
+      } catch (error) {
+        ccNoteError('ccOnOutsidePointer', error, event);
+        return undefined;
+      }
+    }
+
+    function ccOnOutsidePointerInner(event) {
       if (!ccIsOpen()) return;
       const box = ccEl();
       if (!box) return;
@@ -986,6 +1083,15 @@ window.__ModuleLoader__.load({
     }
 
     function ccClose() {
+      try {
+        return ccCloseInner();
+      } catch (error) {
+        ccNoteError('ccClose', error, null);
+        return false;
+      }
+    }
+
+    function ccCloseInner() {
       const el = ccEl();
       if (!el) return false;
       el.removeAttribute('data-dshlg-cc-open');
@@ -2802,11 +2908,11 @@ html[data-dshlg-bright-wall] #root,
 html[data-dshlg-bright-wall] #root * {
   text-shadow: 0 0 1px rgba(0, 0, 0, 0.55), 0 1px 2px rgba(0, 0, 0, 0.35) !important;
 }
-/* 自制界面不跟着加（它们自带底色与描边） */
+/* 自制界面不跟着加（它们自带底色与描边）。
+   ⚠️ 但设置面板 / 控制中心现在是**深底**：亮壁纸下它们要的是暗描影（把白字
+   压住），不是 none —— 正确值在它们自己那条 data-dshlg-bright-wall 规则里。 */
 html[data-dshlg-bright-wall] #dshlg-controls,
-html[data-dshlg-bright-wall] #dshlg-controls *,
-html[data-dshlg-bright-wall] #dshlg-settings,
-html[data-dshlg-bright-wall] #dshlg-settings * {
+html[data-dshlg-bright-wall] #dshlg-controls * {
   text-shadow: none !important;
 }
 
@@ -2845,30 +2951,57 @@ body[data-ds-dark-theme] #root [role='dialog'],
 body[data-ds-dark-theme] #root [role='dialog'] * {
   color: #eaf0fa !important;
 }
-/* 菜单/popover 同样给足底 */
-#root [data-menu-material] {
-  background-color: rgba(var(--dshlg-tone, 255, 255, 255), 0.9) !important;
+/* 菜单/popover：与面板同一块深色玻璃（2026-09-27 用户定稿）。
+   ⚠️ 这条比 buildOverlayCss 里那条**特异性更高**（多了 #root），真正生效的是这里。
+   两处必须一起改 —— 只改一处会得到「改了没反应」的假象
+   （本项目的老坑：行内变量与特异性都会悄悄压过你以为生效的那条）。 */
+#root [data-menu-material][data-menu-material][data-menu-material][data-menu-material] {
+  /* 真正的底色在内部 .material 层（z-index:-1，用 --dsw-menu-surface-fill）——
+     见上面 buildOverlayCss 里的详细说明；这里同样必须改令牌。 */
+  --dsw-menu-surface-fill: rgba(10, 14, 20, 0.82) !important;
+  background-color: rgba(10, 14, 20, 0.82) !important;
+  background-image: none !important;
+  color: #eaf2ff !important;
 }
-body[data-ds-dark-theme] #root [data-menu-material] {
-  background-color: rgba(26, 30, 40, 0.92) !important;
+/* 浅字只给「不带危险色」的项（保住「退出登录」这类红项） */
+#root [data-menu-material] :not([class*='danger']):not([class*='Danger']) {
+  color: #eaf2ff !important;
 }
+body[data-ds-dark-theme] #root [data-menu-material][data-menu-material][data-menu-material][data-menu-material] {
+  background-color: rgba(8, 11, 17, 0.86) !important;
+}
+/* ⚠️ 上面属性为什么写四遍：动态样式里有一条
+   「#root, #root *:not([data-dshlg-keep]):not([data-dshlg]):not([data-dshlg-region])
+    { background-color: transparent !important }」，特异性高达 **(0,4,0)**，
+   会把 #root 里任何元素的底色清成透明。
+   真机那个账号菜单是 **portal 到 body** 的（不在 #root 里），所以它躲过了那条；
+   但万一某个版本把菜单放进 #root，普通写法就会被清掉 → 这里靠重复属性把
+   特异性抬到 (0,5,0) 压过它。重复四次是 CSS 里最省事的「提权」写法，
+   不是手滑，别删。（这类「改了没反应」的坑本项目踩过：行内变量、特异性。） */
 
 
 /* ══ DSH 自带设置面板（SettingsShell 覆盖层）必须不透明 ══════════════
    真身：<hash>_overlay{position:fixed;inset:0;background:var(--dsw-alias-bg-base)}
    本插件把 --dsw-alias-bg-base 改成透明（为了让壁纸透出），
    这个全屏覆盖层就跟着变透明 → 面板文字与工作区文字叠在一起看不清。
-   按**稳定语义后缀**命中（DSH 的类名是模块哈希 + 语义后缀，后缀稳定），
-   并给一块与主题配对的实色板；字色交给 DSH 自己的令牌，
-   所以「浅底配深字 / 深底配浅字」天然成立，不会出现白底白字。 */
+   按**稳定语义后缀**命中（DSH 的类名是模块哈希 + 语义后缀，后缀稳定）。
+   ⚠️ 2026-09-27 用户改主意了：要「深色半透明」（照图一那张任务卡），
+      不要白色实板（原话：图四「太实了」）。所以这里换成**深色半透明**。
+      随之而来的一条：字色不能再交给 DSH 令牌 —— 用户是浅色主题，DSH 给的是
+      深字，压在深底上就看不见了。改成在**面板**上强制浅字，见下面 _panel 段。
+   真身结构（从 DSH 自己的 app.asar 里挖出来的 CSS，不是猜的）：
+     .y7bFDa_overlay{position:fixed;inset:0;display:flex;justify-content:center;align-items:center}
+     .y7bFDa_mask{background:var(--dsw-alias-bg-mask-1);backdrop-filter:var(--dsw-mask-blur);position:absolute;inset:0}
+     .y7bFDa_panel{z-index:1;width:800px}
+   → 全屏那层白纱来自 **overlay 自己的 background**，而 panel 是 overlay 的**子元素**。 */
 [class*='_overlay'],
 [class*='_scrim'] {
-  background-color: var(--dshlg-plate-bg, rgba(250, 251, 253, 0.97)) !important;
+  background-color: var(--dshlg-plate-bg, rgba(9, 12, 18, 0.6)) !important;
   background-image: none !important;
 }
 body[data-ds-dark-theme] [class*='_overlay'],
 body[data-ds-dark-theme] [class*='_scrim'] {
-  background-color: var(--dshlg-plate-bg-dark, rgba(19, 23, 31, 0.98)) !important;
+  background-color: var(--dshlg-plate-bg-dark, rgba(8, 11, 17, 0.68)) !important;
 }
 /* 覆盖层里通常还有一层内层「面板」，一并给底，避免只有边缘实、内容区透 */
 [class*='_overlay'] [class*='_panel'],
@@ -2880,6 +3013,54 @@ body[data-ds-dark-theme] [class*='_scrim'] {
 [class*='_overlay'] [class*='_list'] {
   background-color: transparent !important;
   background-image: none !important;
+}
+/* ══ DSH 自带设置浮层的**面板本体**：也给同一块深色玻璃（2026-09-27 定稿）══
+   用户要求「图四那张设置卡也按图一的样式」。它原来是一块**浅色实板**，
+   压在深色壁纸上很跳。
+   真身类名（从 DSH 自己的 app.asar 里挖出来的，不是猜的）：
+     y7bFDa_overlay（全屏层）+ y7bFDa_panel（卡片）+ _header / _nav / _content / _close
+   —— 哈希会随 DSH 版本变，所以只认**语义后缀**（本项目一贯做法）。
+   ⚠️ 只动 _panel 那一层（卡片本体），**不动** _overlay（全屏那层）：
+      [class*='_overlay'] 这个选择器很宽，DSH 别的浮层（如 vPH_UG_overlay）也会命中。
+   底与字绑成一个决策：底深了字必须跟着浅，否则就是深底压深字。
+   ⚠️ 若 DSH 自己的**填充型**小控件（自带浅底的按钮）出现「白底白字」，
+      给它单独加一条 color 覆盖即可 —— 目前已核过 _header/_nav/_content/_close，
+      没有自带底的类型。 */
+[class*='_overlay'] [class*='_panel'] {
+  background-color: rgba(10, 14, 20, 0.82) !important;
+  border: 1px solid rgba(147, 197, 253, 0.45) !important;
+  border-radius: 16px !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    0 12px 34px rgba(0, 0, 0, 0.42) !important;
+}
+[class*='_overlay'] [class*='_panel'],
+[class*='_overlay'] [class*='_panel'] * {
+  color: #eaf2ff !important;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+}
+/* ⚠️ 上面那条会把 DSH **自带浅底**的按钮也刷成白字 → 白底白字（实测踩到：
+   「打开配置文件」「查询用量」两个浅底按钮看不见字）。
+   这里把面板里的按钮/输入框统一成插件自己那一套（半透明白底 + 浅描边 + 白字），
+   既不会白底白字，观感也和插件面板一致 —— 顺带把 DSH 的主/次按钮差异抹平，
+   这正是「几个面板看起来像同一块材料」需要的。 */
+[class*='_overlay'] [class*='_panel'] button,
+[class*='_overlay'] [class*='_panel'] [role='button'] {
+  background-color: rgba(255, 255, 255, 0.1) !important;
+  background-image: none !important;
+  border: 1px solid rgba(255, 255, 255, 0.22) !important;
+  color: #eaf2ff !important;
+}
+[class*='_overlay'] [class*='_panel'] button:hover,
+[class*='_overlay'] [class*='_panel'] [role='button']:hover {
+  background-color: rgba(255, 255, 255, 0.2) !important;
+}
+[class*='_overlay'] [class*='_panel'] input,
+[class*='_overlay'] [class*='_panel'] select,
+[class*='_overlay'] [class*='_panel'] textarea {
+  background-color: rgba(255, 255, 255, 0.08) !important;
+  border: 1px solid rgba(255, 255, 255, 0.22) !important;
+  color: #eaf2ff !important;
 }
 /* 自制界面不受影响（它们自带底色与描边） */
 #dshlg-settings, #dshlg-controls, #dshlg-gallery, #dshlg-gear, #dshlg-restore {
@@ -3175,20 +3356,44 @@ ${glassVars(theme, modal.alpha, modal.frost, cardRefract)}
      */
     function buildOverlayCss(theme) {
       if (CONFIG.overlayMode === 'off') return '';
-      const overlay = layer('overlayGlass', 0.9, 24);
-      const a = overlay.alpha;
       const dark = theme.dark !== false;
-      const tone = '255, 255, 255';
       return `
-/* 浮层：菜单、hover 卡、气泡。DSH 自带 backdrop-filter，这里只补底色与描边。 */
+/* ══ 浮层菜单（账号菜单「设置 / 意见反馈 / 退出登录」、下拉菜单、hover 卡）══
+   2026-09-27 用户定稿：和三个面板**同一块深色玻璃**（图一那张任务卡的样式）。
+   改之前这里是一层 **37.8% 白纱** 压在 DSH 自己的模糊上 —— 在深色壁纸下
+   就变成一块「灰实底」，和面板明显不是一套材料（用户圈出来指出了这处）。
+   底深了就必须配浅字：DSH 在浅色主题下给的是深字，压在深底上读不出来
+   （底与字绑成一个决策）。DSH 自带的 backdrop-filter 保持不动。 */
 [data-menu-material] {
-  background-color: rgba(${tone}, ${(a * 0.42).toFixed(3)}) !important;
-  background-image: linear-gradient(180deg,
-    rgba(${tone}, ${(a * 0.24).toFixed(3)}) 0%,
-    rgba(${tone}, ${(a * 0.12).toFixed(3)}) 100%) !important;
-  border: 1px solid rgba(${tone}, ${dark ? 0.22 : 0.5}) !important;
-  box-shadow: inset 0 1px 0 rgba(${tone}, ${dark ? 0.2 : 0.55}),
-    0 16px 44px rgba(0, 0, 0, ${dark ? 0.42 : 0.18}) !important;
+  /* ⚠️⚠️ 真正的底色画在**内部那层** .material 上，不是这个元素上！
+     DSH 的结构（从 app.asar 里挖出来的真身）：
+       div[data-menu-material] > div[aria-hidden] .material(position:absolute;inset:0;z-index:-1)
+     .material 的 background 用的是 DSH 令牌 --dsw-menu-surface-fill，
+     而**负 z-index 的子元素会盖住父元素自己的底色** ——
+     所以只改父元素 background 是看不见效果的（本轮实测踩到：改完菜单还是灰的）。
+     浅色主题下该令牌 = rgba(248,249,250,0.58)（58% 近白），压在深色模糊层上
+     就是用户圈出来的那块「灰实底」。
+     → 主改这条令牌；父元素底色只作兜底（万一某版 DSH 去掉 .material 层）。 */
+  --dsw-menu-surface-fill: rgba(10, 14, 20, 0.82) !important;
+  background-color: rgba(10, 14, 20, 0.82) !important;
+  background-image: none !important;
+  border: 1px solid rgba(147, 197, 253, ${dark ? 0.35 : 0.45}) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    0 16px 44px rgba(0, 0, 0, ${dark ? 0.42 : 0.34}) !important;
+  color: #eaf2ff !important;
+}
+/* 浅字只给「不带危险色」的项 —— 「退出登录」这类红项要留住自己的颜色 */
+[data-menu-material] :not([class*='danger']):not([class*='Danger'])
+  :not([class*='error']):not([class*='Error']) {
+  color: #eaf2ff !important;
+}
+/* 悬停态：DSH 在浅色主题下用的是浅灰填充，配白字会看不见 → 换成半透明白 */
+[data-menu-material] [role='menuitem']:hover,
+[data-menu-material] [role='option']:hover,
+[data-menu-material] button:hover,
+[data-menu-material] a:hover {
+  background-color: rgba(255, 255, 255, 0.14) !important;
+  background-image: none !important;
 }
 `;
     }
@@ -3382,29 +3587,31 @@ ${glassVars(theme, modal.alpha, modal.frost, cardRefract)}
   overflow: auto;
   padding: 12px 14px;
   font: 13px/1.5 "Segoe UI", system-ui, "Microsoft YaHei", sans-serif;
-  /* 文字用**粉色系**而不是白 —— 深色模式下原来是近白 #fff0f6，用户反馈「字体还是白色」。
-     再配一层阴影，保证在浅色壁纸上也读得出。 */
-  /* 明确的粉色，不是淡粉（#ffd0e6 看着仍接近白）。
-     深色模式用饱和粉、浅色模式用深洋红，一眼能看出是彩色。 */
-  /* 字色与底色可由 JS 自适应覆盖（见 adaptPanelReadability） */
-  color: var(--dshlg-panel-ink, ${dark ? '#ff9ecb' : '#8a1046'});
-  text-shadow: ${dark
-    ? '0 1px 2px rgba(0, 0, 0, 0.6)'
-    : '0 1px 1px rgba(255, 255, 255, 0.55)'};
-  /* ⚠️ 兜底纱必须**本身就够读**。
-     原来是 rgba(bar-tone, 0.06/0.08) —— 只有 6~8%，那是「自适应一定会写
-     --dshlg-panel-veil」时代的假设。实测：设置面板能被 adaptPanelReadability
-     写入行内变量救回来（0.78），而控制中心没有那个自适应 → 直接吃 6~8% 兜底
-     → 必然全透、字看不清（用户实测反馈）。
-     自适应成功时它写的是**行内变量**，优先级高于样式表，所以这里调高兜底
-     不影响自适应；失败时兜底值本身就够读。 */
-  background: var(--dshlg-panel-veil, ${dark ? 'rgba(20, 25, 35, 0.9)' : 'rgba(252, 253, 255, 0.92)'});
-  border: 1px solid rgba(var(--dshlg-bar-tone), ${dark ? 0.55 : 0.85});
+  /* ══ 深色液态玻璃（2026-09-27 用户定稿：按图一红框里那张任务卡的样式）════
+     依据是**从用户截图逐像素量出来的**，不是凭感觉：
+       · 那张卡内部压在近黑壁纸上读 #0C0F0F、压在灌木上读 #6B7866 ——
+         说明它是**很透**的深色玻璃（壁纸看得见），不是实底；
+       · 字是白的；描边细。
+     所以这里：深色底 + 低 alpha（壁纸透出来）+ 1px 冰蓝描边 + 顶部高光 + 白字。
+     ⚠️ 必须 !important 且**不跟随主题**（浅色主题下也走深色）：
+       ① adaptPanelReadability 会把「纱」与「字色」写成**行内变量**，行内优先级
+          高于样式表 —— 不钉死就会被它写回粉白纱（图二那层粉白就是这么来的）；
+       ② 用户在浅色主题下配深色壁纸，浅色档的板会又白又假、和壁纸打架。
+     亮壁纸兜底：把 alpha 提到 0.78（见下面 data-dshlg-bright-wall 那一段），
+     白字在任何壁纸上都压得住，同时仍然看得见壁纸。 */
+  color: #eaf2ff !important;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.7) !important;
+  /* 0.82 是拿真截图做过 A/B 定的（见 lg-verify/preview-alpha-*.png）：
+     0.55 → 用户反馈「太透」，背景正文会透上来抢注意力；
+     0.72 → 还是能看见背景字；
+     0.90 → 背景字全没了、但壁纸也几乎看不见，偏「实」。
+     0.82 = 壁纸看得见（树/屋顶/灯都在）+ 背景字压得住。 */
+  background: rgba(10, 14, 20, 0.82) !important;
+  border: 1px solid rgba(var(--dshlg-bar-tone), 0.55) !important;
   border-radius: 16px;
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, ${dark ? 0.55 : 0.95}),
-    0 12px 34px rgba(var(--dshlg-bar-tone), 0.35),
-    0 12px 34px rgba(0, 0, 0, ${dark ? 0.45 : 0.18});
+    inset 0 1px 0 rgba(255, 255, 255, 0.2),
+    0 12px 34px rgba(0, 0, 0, 0.42) !important;
 }
 #${SETTINGS_ID}[hidden] { display: none; }
 #${SETTINGS_ID} .head {
@@ -3614,7 +3821,8 @@ ${glassVars(theme, modal.alpha, modal.frost, cardRefract)}
 }
 #${CC_ID} .cc-btn:disabled { opacity: .45; cursor: not-allowed; }
 #${CC_ID} .cc-btn.cc-go { border-color: rgba(var(--dshlg-bar-tone), 0.95); font-weight: 600; }
-#${CC_ID} .cc-btn.cc-danger { border-color: rgba(248, 113, 113, 0.9); color: ${dark ? '#fecaca' : '#7f1d1d'}; }
+/* 深色玻璃下危险色也要用浅红（浅色主题那个 #7f1d1d 压在深底上根本看不见） */
+#${CC_ID} .cc-btn.cc-danger { border-color: rgba(248, 113, 113, 0.9); color: #fecaca; }
 #${CC_ID} .cc-row {
   display: flex;
   align-items: flex-start;
@@ -3685,9 +3893,16 @@ ${glassVars(theme, modal.alpha, modal.frost, cardRefract)}
 #${CC_ID} .cc-note.cc-err { border-color: rgba(248, 113, 113, 0.85); }
 #${CC_ID} .cc-note.cc-ok { border-color: rgba(var(--dshlg-bar-tone), 0.85); }
 #${CC_ID} .cc-tail { opacity: .62; font-size: 11.5px; margin-top: 6px; }
-/* 壁纸很亮时，这些面板和设置面板一样需要深字（沿用同一套覆盖） */
-html[data-dshlg-bright-wall] #${CC_ID},
-html[data-dshlg-bright-wall] #${CC_ID} * { color: #1a1030; text-shadow: 0 1px 1px rgba(255, 255, 255, 0.6); }
+/* 壁纸偏亮时：**不换字色**（深色玻璃永远配白字），而是把底加厚一点 ——
+   白字压在亮壁纸上就不发虚，同时壁纸仍然透得出来。两块面板共用这一条。 */
+html[data-dshlg-bright-wall] #${SETTINGS_ID},
+html[data-dshlg-bright-wall] #${CC_ID} {
+  background: rgba(8, 11, 17, 0.9) !important;
+}
+html[data-dshlg-bright-wall] #${SETTINGS_ID} *,
+html[data-dshlg-bright-wall] #${CC_ID} * {
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.75) !important;
+}
 
 /* ══ 控制中心：把纱**钉死**，不跟随自适应 ══════════════════════════════
    为什么必须钉死（用户实测「面板还是看不清」的真因）：
@@ -3701,32 +3916,21 @@ html[data-dshlg-bright-wall] #${CC_ID} * { color: #1a1030; text-shadow: 0 1px 1p
    这正是「两个面板看起来不一样」的原因。
    结论：控制中心不该依赖采样，直接给一个本身就够读的值。
    放在所有控制中心规则之后，同特异性下后写者胜。 */
-/* ══ 控制中心：蓝白果冻玻璃（用户指定）══════════════════════════════
-   三个约束同时满足，做法上互相不冲突：
-     · 蓝白 —— 底色取冰蓝到白的竖向渐变（色相与 --dshlg-bar-tone 同族）
-     · 不透明、字清楚 —— 底色 alpha 0.90~0.96，不用模糊、不用半透；
-       果冻感全部靠**高光与内发光**做，不靠透明度，所以字始终压在实底上
-     · 果冻质感 —— 顶部白色高光（受光面）+ 底部冰蓝内发光（透光感）
-       + 外圈冰蓝柔晕 + 大范围落影（软胶厚度）
-   为什么必须 !important：ccAdaptReadability 会把自适应结果以**行内变量**
-   写到本面板上，行内优先级高于样式表 —— 不钉死就会被它改薄（这正是
-   上一轮「面板还是看不清」的原因）。
-   为什么不用 backdrop-filter：大面积模糊层 + 会动的壁纸 iframe 会闪，
-   本项目已为此回退过一次；果冻感不需要模糊。 */
+/* ══ 控制中心：与设置面板**同一块深色玻璃**（2026-09-27 用户定稿）═══════
+   上一版是「蓝白果冻」实底（用户当初指定），现在用户统一要求成图一红框里
+   那张任务卡的样式：深色 + 半透明（壁纸透出来）+ 白字。
+   下面这些值刻意与上面共用基座**逐字一致** —— 两块面板必须是同一块材料。
+   为什么还要再写一遍 !important：本块在样式表里更靠后，同特异性下后写者胜；
+   显式写一份，免得以后有人只改一处、两块面板就不一致了。
+   仍然不做 backdrop-filter：大面积模糊层 + 会动的壁纸 iframe 会闪。 */
 #${CC_ID} {
-  background: linear-gradient(180deg,
-    ${dark ? 'rgba(30, 41, 59, 0.96)' : 'rgba(255, 255, 255, 0.94)'} 0%,
-    ${dark ? 'rgba(23, 37, 60, 0.97)' : 'rgba(240, 249, 255, 0.96)'} 40%,
-    ${dark ? 'rgba(15, 32, 58, 0.98)' : 'rgba(219, 238, 254, 0.97)'} 100%) !important;
-  border: 1px solid ${dark ? 'rgba(96, 165, 250, 0.55)' : 'rgba(147, 197, 253, 0.85)'} !important;
+  background: rgba(10, 14, 20, 0.82) !important;
+  border: 1px solid rgba(var(--dshlg-bar-tone), 0.55) !important;
   box-shadow:
-    inset 0 1px 0 ${dark ? 'rgba(255, 255, 255, 0.22)' : 'rgba(255, 255, 255, 1)'},
-    inset 0 -12px 26px ${dark ? 'rgba(56, 130, 220, 0.28)' : 'rgba(125, 198, 245, 0.3)'},
-    inset 0 0 0 1px ${dark ? 'rgba(255, 255, 255, 0.06)' : 'rgba(255, 255, 255, 0.7)'},
-    0 8px 22px ${dark ? 'rgba(56, 130, 220, 0.3)' : 'rgba(96, 165, 250, 0.32)'},
-    0 22px 52px ${dark ? 'rgba(0, 0, 0, 0.5)' : 'rgba(30, 64, 175, 0.16)'} !important;
-  color: ${dark ? '#eaf2ff' : '#0d2b4e'} !important;
-  text-shadow: none !important;
+    inset 0 1px 0 rgba(255, 255, 255, 0.2),
+    0 12px 34px rgba(0, 0, 0, 0.42) !important;
+  color: #eaf2ff !important;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.7) !important;
 }
 
 @keyframes dshlg-restore-glow {
@@ -4489,8 +4693,29 @@ html[data-dshlg-bright-wall] #${CC_ID} * { color: #1a1030; text-shadow: 0 1px 1p
       let start = null;
       let moved = false;
 
+      /* ⚠️⚠️ 「控制中心点任何位置都没反应（连关闭都点不动）」的根因就在这里。
+         实测（真 Edge + CDP 真实鼠标事件，2026-09-27）：
+         pointerdown 里 setPointerCapture 之后，**后续那一下 click 的
+         event.target 会被重定向到「捕获元素」本身** ——
+         elementFromPoint 命中的是按钮，而 click 的 target 是 <div id="dshlg-cc">，
+         于是委托里的 closest('[data-cc-act]') 永远是 null，面板里每个按钮都失配。
+         项目现有测试全用 el.click()（合成 click 不产生 pointerdown），
+         所以测试一路全绿、真机全死 —— 这就是它一直没被发现的原因。
+         修法：指针按在**交互元素**上时不接管拖动、也不捕获指针，
+         按钮保持原生 click；按在面板空白处才拖动（拖动照旧有指针捕获）。
+         必须写 t !== el：齿轮、找回圆点这些「自身就是 button 的拖动物」
+         要照旧能拖（它们的 click target 就是自己，不受重定向影响）。 */
+      const NO_DRAG_SEL = 'button, a[href], input, select, textarea, label,'
+        + ' [contenteditable="true"], [role="button"], [role="tab"], [role="slider"],'
+        + ' [role="menuitem"], [role="checkbox"], [role="switch"], [role="option"]';
       el.addEventListener('pointerdown', (event) => {
         if (event.button !== 0) return;
+        /* 交互元素上按下：不拖动、不捕获指针 —— 保住它们的原生 click */
+        const t = event.target;
+        if (t !== el && t && typeof t.closest === 'function' && t.closest(NO_DRAG_SEL)) {
+          start = null;
+          return;
+        }
         const r = el.getBoundingClientRect();
         start = {
           x: event.clientX,
