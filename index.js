@@ -1027,6 +1027,13 @@ function controlJson(res, status, payload) {
     'Content-Length': String(body.byteLength),
     'Cache-Control': 'no-store',
     'X-Content-Type-Options': 'nosniff',
+    /* ⚠️ 控制接口**必须**带 CORS 头 —— 这是「控制服务未连接」的真因。
+       页面在 http://127.0.0.1:19387（或应用自定义协议），而本服务在 3932x，
+       两者**跨源**。壁纸接口一直带着 ACAO 所以正常；控制接口漏了，
+       于是浏览器把响应交给 JS 之前就拦掉了 —— 表现就是面板里
+       「控制服务未连接，稍后再试」，而命令行 curl 打同一个地址却是 200。
+       用 res.req 拿原始请求以取得 Origin（与其它 send() 调用点同一约定）。 */
+    ...corsHeaders(res),
   });
   res.end(body);
 }
