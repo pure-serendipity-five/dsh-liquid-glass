@@ -1,0 +1,60 @@
+{
+  "name": "@local/dsh-liquid-glass",
+  "version": "2.5.2",
+  "private": true,
+  "type": "module",
+  "description": "DSH 液态玻璃主题 + 壁纸库（Liquid glass theme & wallpaper gallery for DeepSeek Harness）",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./styles.css": "./styles.css"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "lib/client.js",
+    "styles.css",
+    "cordis.patch.yml"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-layout"
+      ]
+    }
+  },
+  "license": "MIT",
+  "author": "pure-serendipity-five",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pure-serendipity-five/dsh-liquid-glass.git"
+  },
+  "homepage": "https://github.com/pure-serendipity-five/dsh-liquid-glass#readme",
+  "bugs": {
+    "url": "https://github.com/pure-serendipity-five/dsh-liquid-glass/issues"
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "deepseek",
+    "cordis",
+    "cordis-plugin",
+    "dsh-plugin",
+    "liquid-glass",
+    "glassmorphism",
+    "ios26",
+    "theme",
+    "wallpaper",
+    "wallpaper-engine",
+    "client-plugin",
+    "ui"
+  ],
+  "engines": {
+    "node": ">=20"
+  }
+}

@@ -1,0 +1,64 @@
+# ═══════════════════════════════════════════════════════════════
+# dsh-liquid-glass · .gitignore
+#
+# 原则：只忽略「可再生成 / 本机临时 / 系统噪声 / 无版权的第三方素材」。
+#      源码（client.js / index.js / styles.css / lib/）、测试脚本（test/*.mjs）、
+#      文档（README.md / test/README.md / baseline-expected.md）、
+#      README 引用到的产品截图（preview/layered-glass-*.png 等）**一律入库**。
+#      每段的理由见段首注释。
+# ═══════════════════════════════════════════════════════════════
+
+# ① 依赖目录：clone 后各自 install；DSH profile 侧走 junction，不在仓库里
+node_modules/
+
+# ② 测试临时产物：verify.mjs 每跑一次就重写（.tmp/stderr-<场景>.log），纯运行噪声
+**/.tmp/
+*.tmp
+
+# ③ 测试截图：verify.mjs 每次运行重新生成，内容随主题 / 字体 / DSH 版本变化，
+#    不是源码。`node test/verify.mjs` 会重新生成 test/shots/*.png。
+#    若确实想提交视觉基线，用 `git add -f test/shots/xxx.png` 强制入库。
+test/shots/
+
+# ④ 诊断脚本产物（**隐私红线，必须忽略**）：双击 `test\诊断-双击运行.bat` 在本机跑出来的结果。
+#    · dsh-liquid-glass-diagnose.json 会把真实 DOM 元素的 textContent 截 40 字写进报告 ——
+#      实测含**真实会话标题**（"发动机标定知识库"/"审计续做4小时"…）与**对话内容片段**；
+#    · dsh-liquid-glass-shot-full.png / -shot-brand.png 是**整窗真实界面截图**，同样含会话内容；
+#    · meta.txt / log 含本机绝对路径与 DSH 构建信息。
+#    这几样一旦入库就是隐私事故，永远不要提交（详见 review/03-release.md §1.3）。
+test/dsh-liquid-glass-diagnose.json
+test/dsh-liquid-glass-diagnose.log
+test/dsh-liquid-glass-diagnose-meta.txt
+test/dsh-liquid-glass-shot-*.png
+
+# ⑤ 壁纸素材：Steam 工坊 431960 / WE 项目里的壁纸版权属原作者，
+#    **不要随仓库分发**。本包 wallpapers/ 只留说明文件；
+#    若要随包发布自有版权壁纸，删掉下面两行（或 git add -f）。
+/wallpapers/**
+!/wallpapers/README.md
+
+# ⑥ 日志与本地备份
+*.log
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.bak
+*.orig
+*.rej
+*~
+
+# ⑦ 编辑器 / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ⑧ 操作系统噪声
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ⑨ 测试脚本的本机浏览器 profile 残留（脚本默认写在 D:\dev-cache\temp，
+#    万一改成仓库内路径，这两条能兜住）
+.edge-*/
+edge-profile*/

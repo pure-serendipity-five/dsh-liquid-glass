@@ -1,0 +1,8 @@
+# dsh-liquid-glass 的 Loader 补丁。
+#
+# Host 半体（index.js）是空的 —— 本包不做任何宿主侧的事，
+# 不注册路由、不依赖 webServer，所有工作都在客户端半体（client.js）。
+# 这样能彻底避开「插件 scope 拿不到 webServer」那类问题。
+- insert:
+    - id: dsh-liquid-glass
+      name: '@local/dsh-liquid-glass'

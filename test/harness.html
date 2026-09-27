@@ -1,0 +1,755 @@
+<!doctype html>
+<html lang="zh-CN" data-platform="win32">
+<head>
+<meta charset="utf-8">
+<title>dsh-liquid-glass · 验证台</title>
+<style>
+  /* ════════════════════════════════════════════════════════════════
+   * 这里只放三样东西：
+   *   1) DSH 自己那份 AppFrame / ApprovalPanel / Modal 的**真实 CSS**
+   *      （逐字从 DSH 打包产物里抄出来的，类名是真实的哈希名）
+   *   2) 模拟「DSH 组件私有样式表」的那点装饰（气泡、卡片、面板底色）
+   *      —— 真 DSH 里这些来自各 ui-* 包的 module.css，本验证台不需要
+   *      逐个复刻，够撑出「有底色 + 有圆角 + 有按钮」即可
+   *   3) 验证台自身的布局辅助样式（.lg-* 前缀，插件不认这些名字）
+   *
+   * ⚠️ 这里**不含任何插件自己的 CSS**。插件必须自己把样式注进来；
+   *    它注不进来 / 没打上标记，就是这个验证台要抓的失败。
+   * ════════════════════════════════════════════════════════════════ */
+
+  /* ── ① DSH AppFrame.module.css（真实，逐字）────────────────────
+     来源：dsh-client-ui-layout/lib/client.js 里的 `const css = "..."` */
+  .ZTP-Xa_frame{background:var(--dsw-alias-bg-base);grid-template-rows:100%;height:100%;display:grid;position:relative;overflow:hidden}
+  .ZTP-Xa_frame[data-animating]{transition:grid-template-columns var(--ds-transition-duration-slow) var(--ds-ease-in-out)}
+  .ZTP-Xa_frame[data-dragging]{transition:none}
+  [data-windows-titlebar] .ZTP-Xa_frame{--dsh-windows-content-radius:16px;box-sizing:border-box;padding-top:var(--dsh-windows-titlebar-height);background:var(--dsw-specific-sidebar-fill);grid-template-rows:minmax(0,1fr)}
+  [data-windows-titlebar] .ZTP-Xa_centerCol{background:var(--dsw-alias-bg-base);border-radius:var(--dsh-windows-content-radius) 0 0 0;corner-shape:round}
+  [data-windows-titlebar] .ZTP-Xa_frame:before{content:"";height:var(--dsh-windows-titlebar-height);background:var(--dsw-specific-sidebar-fill);-webkit-app-region:drag;position:absolute;inset:0 0 auto}
+  [data-windows-titlebar] .ZTP-Xa_sidebarCol{border-right:none}
+  [data-windows-titlebar] .ZTP-Xa_handle{top:var(--dsh-windows-titlebar-height)}
+  @media (prefers-reduced-motion:reduce){.ZTP-Xa_frame[data-animating]{transition:none}}
+  .ZTP-Xa_sidebarCol{background:var(--dsw-specific-sidebar-fill);border-right:.5px solid var(--dsw-alias-border-l3);min-width:0;overflow:hidden}
+  .ZTP-Xa_centerCol{flex-direction:column;min-width:0;display:flex;overflow:hidden}
+  [data-platform=darwin] .ZTP-Xa_frame{background:0 0}
+  html[data-platform=darwin]{--dsh-frame-top-clearance:48px}
+  [data-platform=darwin] .ZTP-Xa_sidebarCol{background:linear-gradient(to bottom, #7a9bf01a, #7a9bf000 35%, #8f89b800 68%, #8f89b817), color-mix(in srgb, color-mix(in srgb, var(--dsw-specific-sidebar-fill) 97%, #7a9bf0) 40%, transparent);border-right:none}
+  [data-platform=darwin] [data-ds-dark-theme] .ZTP-Xa_sidebarCol{background:linear-gradient(to bottom, #7a9bf014, #7a9bf000 35%, #8f89b800 68%, #8f89b812), color-mix(in srgb, var(--dsw-specific-sidebar-fill) 50%, transparent)}
+  @media (prefers-reduced-transparency:reduce){[data-platform=darwin] .ZTP-Xa_sidebarCol{background:var(--dsw-alias-bg-base)}}
+  /* 其余规则（overlayLayer / leadingSeat / handle 的几何）本验证台用不到 */
+
+  /* ── ② DSH ApprovalPanel.module.css（真实，逐字）────────────────
+     来源：dsh-client-ui-approval/lib/client.js 里的 `const css = "..."` */
+  .EpEjdW_root{padding:8px calc(var(--dsh-composer-side-clearance) + 16px) 12px;flex-direction:column;align-items:center;display:flex}
+  .EpEjdW_card{width:100%;max-width:var(--dsh-chat-content-width);border:1px solid var(--dsw-alias-state-warn-secondary);border-radius:var(--dsw-radius-xl);background:var(--dsw-specific-input-major);box-shadow:var(--dsw-shadow-lv2);--dsh-scrollbar-thumb:var(--dsw-alias-scrollbar-bg-l2);--dsh-scrollbar-thumb-hover:var(--dsw-alias-scrollbar-hover-l2);overflow:hidden}
+  .EpEjdW_strip{background:var(--dsw-alias-state-warn-tertiary);color:var(--dsw-alias-state-warn-primary);align-items:center;gap:8px;padding:10px 16px;font-size:13px;line-height:18px;display:flex}
+  .EpEjdW_body{box-sizing:border-box;max-height:var(--dsh-composer-text-max-height);flex-direction:column;gap:6px;padding:12px 16px 0;display:flex;overflow-y:auto}
+  .EpEjdW_headline{color:var(--dsw-alias-label-primary);font-size:15px;font-weight:500;line-height:24px}
+  .EpEjdW_command{color:var(--dsw-alias-label-tertiary);font-family:var(--ds-font-family-code);word-break:break-all;font-size:13px;line-height:20px}
+  .EpEjdW_actionRow{justify-content:flex-end;gap:8px;padding:14px 16px;display:flex}
+  .EpEjdW_reject:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover-danger);color:var(--dsw-alias-state-error-primary);border-color:#0000}
+
+  /* ── ③ DSH Modal.module.css（真实：只取本验证台用到的四条）──────
+     来源：dsh-client-ui-primitives/lib/Modal.module.css */
+  .lgModal_root{pointer-events:auto;position:fixed;inset:0;z-index:1000;display:flex;align-items:center;justify-content:center;padding:max(24px,var(--dsh-frame-top-clearance,24px)) 24px}
+  .lgModal_mask{position:absolute;inset:0;backdrop-filter:var(--dsw-mask-blur)}
+  .lgModal_mask::after{content:'';position:absolute;inset:0;background:var(--dsw-alias-bg-mask-1)}
+  .lgModal_dialog{position:relative;z-index:1;display:flex;flex-direction:column;gap:20px;width:min(380px,100%);padding:0 0 24px;overflow:hidden;border:0;border-radius:var(--dsw-radius-panel);background:var(--dsw-alias-bg-layer-2);box-shadow:var(--dsw-elevation-prominent)}
+  .lgModal_title{margin:0;font-size:16px;line-height:24px;font-weight:500;color:var(--dsw-alias-label-primary);padding:22px 14px 0 24px}
+  .lgModal_body{padding:0 24px;font-size:14px;line-height:22px;color:var(--dsw-alias-label-primary)}
+  .lgModal_footer{display:flex;align-items:center;justify-content:flex-end;gap:8px;padding:0 24px}
+
+  /* ── ④ 验证台自身的布局（.lg-* / .mock-*，插件不认这些名字）──── */
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    font: 14px/1.5 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+    color: var(--dsw-alias-label-primary, #eee);
+    overflow: hidden;
+    /* ?wallpaper=0 时露出来的中性底色（深浅各一块，方便看毛玻璃有没有糊） */
+    background: #6b7280;
+  }
+
+  /* 壁纸替身：真实 DSH 里这一层是插件注入的 #dshlg-wall（内含壁纸 iframe）。
+     这里用高对比棋盘格 + 明暗色块，让「文字压在壁纸上」「区域全透明」
+     这类问题在截图里一眼可见。 */
+  #mock-wallpaper {
+    position: fixed; inset: 0; z-index: 0; pointer-events: none;
+    background-color: #12161d;
+    background-image:
+      radial-gradient(circle at 12% 18%, #f5d76e 0 12%, transparent 42%),
+      radial-gradient(circle at 78% 12%, #2b6cb0 0 16%, transparent 46%),
+      radial-gradient(circle at 62% 82%, #e8eef8 0 14%, transparent 44%),
+      linear-gradient(115deg, #0b0f16 0%, #f7fafc 46%, #101418 52%, #e2e8f0 100%),
+      repeating-conic-gradient(#ffffff 0% 25%, #101418 0% 50%);
+    background-size: auto, auto, auto, auto, 120px 120px;
+    filter: none;
+  }
+  /* 明暗分明的小方块：模糊/毛玻璃会把它糊掉，(半)透明则会原样透出来 */
+  #mock-wallpaper .lg-swatch { position: absolute; width: 220px; height: 220px; }
+  #mock-wallpaper .lg-swatch.s1 { left: 6%;  top: 10%; background: #ff3b30; }
+  #mock-wallpaper .lg-swatch.s2 { left: 30%; top: 58%; background: #34c759; }
+  #mock-wallpaper .lg-swatch.s3 { left: 58%; top: 6%;  background: #ffcc00; }
+  #mock-wallpaper .lg-swatch.s4 { left: 80%; top: 66%; background: #0a84ff; }
+  #mock-wallpaper .lg-swatch.s5 { left: 46%; top: 34%; background: #ffffff; }
+  #mock-wallpaper .lg-caption {
+    position: absolute; left: 12px; bottom: 12px; padding: 4px 8px;
+    background: #000c; color: #fff; font: 12px/1.4 ui-monospace, Consolas, monospace;
+    border-radius: 6px;
+  }
+
+  /* 真实 DSH 里 #root 本身没有底色（background-color: transparent），
+     底色来自 .ZTP-Xa_frame。这里保持一样，免得验证台自己引入一个白块。 */
+  #root { position: relative; }
+
+  /* 侧栏内容。padding-bottom 是留给左下角说明条的（#mock-wallpaper .lg-caption
+     固定在下边 12px 处）：不留的话 .mock-foot 那行按钮会跟它叠在一起，
+     截图里「帮助」按钮被盖住，读图的人会以为是插件把按钮弄没了。 */
+  .mock-side { display: flex; flex-direction: column; height: 100%; gap: 4px; padding: 10px 8px 56px; }
+  .mock-side .mock-brand { font-weight: 600; padding: 6px 8px 10px; font-size: 15px; }
+  .mock-item {
+    display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
+    padding: 9px 10px; border: 0; border-radius: 10px; cursor: pointer;
+    background: #ffffff26; color: inherit; font: inherit;
+  }
+  .mock-item[aria-current="page"] { background: #ffffff40; }
+  .mock-item .mock-dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; opacity: .6; flex: none; }
+  .mock-side .mock-foot { margin-top: auto; display: flex; gap: 6px; }
+
+  /* 中间会话区 */
+  .mock-center { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+  .mock-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 20px 24px; display: flex; flex-direction: column; gap: 14px; }
+  .mock-bubble { max-width: 78%; padding: 12px 14px; border-radius: 14px; background: #ffffff24; border: 1px solid #ffffff2e; }
+  .mock-bubble.user { align-self: flex-end; }
+  .mock-bubble .mock-meta { font-size: 12px; opacity: .75; margin-bottom: 4px; }
+  .mock-code { font: 12px/1.6 ui-monospace, Consolas, monospace; background: #ffffff1f; border: 1px solid #ffffff2e; border-radius: 10px; padding: 10px 12px; white-space: pre-wrap; }
+  .mock-center .mock-bottom { flex: none; padding: 0 24px 18px; }
+
+  /* 输入卡片（模拟 DSH 的 composer：圆角 + ≥2 个按钮，插件靠这两个特征命中） */
+  .mock-composer { width: 100%; max-width: 860px; margin: 0 auto; border-radius: 18px; background: var(--dsw-specific-input-major); border: 1px solid var(--dsw-alias-border-l2); padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+  .mock-editor { min-height: 56px; max-height: 200px; overflow-y: auto; padding: 8px 10px; border-radius: 10px; outline: none; background: #ffffff1a; }
+  .mock-editor:empty::before { content: attr(data-placeholder); opacity: .55; }
+  .mock-row { display: flex; align-items: center; gap: 6px; }
+  .mock-btn { border: 1px solid var(--dsw-alias-border-l2); background: #ffffff1f; color: inherit; border-radius: 8px; padding: 6px 10px; font: inherit; cursor: pointer; }
+  .mock-btn.primary { background: var(--dsw-alias-brand-primary, #4176e6); border-color: transparent; color: #fff; }
+  .mock-spacer { flex: 1 1 auto; }
+
+  /* 右栏 */
+  .mock-right { position: absolute; top: 0; bottom: 0; right: 0; background: var(--dsw-alias-bg-layer-1); border-left: 1px solid var(--dsw-alias-border-l2); display: flex; flex-direction: column; }
+  .mock-right .mock-right-head { display: flex; align-items: center; gap: 6px; padding: 10px 12px; border-bottom: 1px solid var(--dsw-alias-border-l3); }
+  .mock-right .mock-right-body { flex: 1 1 auto; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+  .mock-file { display: flex; align-items: center; gap: 8px; padding: 7px 9px; border-radius: 8px; background: #ffffff1c; }
+  .mock-right .mock-right-foot { padding: 10px 12px; display: flex; gap: 6px; border-top: 1px solid var(--dsw-alias-border-l3); }
+</style>
+</head>
+<body>
+
+<!-- ════════════════════════════════════════════════════════════════
+     壁纸替身（在 #root 之下、z-index 0）
+     真实 DSH：插件注入 #dshlg-wall（内含壁纸 iframe）占这一层。
+     ════════════════════════════════════════════════════════════════ -->
+<div id="mock-wallpaper" aria-hidden="true">
+  <i class="lg-swatch s1"></i><i class="lg-swatch s2"></i><i class="lg-swatch s3"></i>
+  <i class="lg-swatch s4"></i><i class="lg-swatch s5"></i>
+  <div class="lg-caption">壁纸替身（高对比棋盘格）· 文字若压在这上面能一眼看出</div>
+</div>
+
+<div id="root"></div>
+
+<script>
+/* ══════════════════════════════════════════════════════════════════
+ * 0. 环境桩（只桩环境，不碰插件）
+ *    · URL 查询开关 ?theme=dark|light
+ *    · localStorage：file:// 下访问会抛 SecurityError，先给个内存实现，
+ *      免得插件里的 try/catch 之外的路径炸掉
+ *    · fetch：插件会去探宿主半体（127.0.0.1:39321-39324 / __wallpapers）。
+ *      这里直接拒绝，模拟「宿主没起服务」，插件就会走内置背景层那条路
+ *      —— 这正是我们要测的场景（无壁纸 / 内置背景）。
+ * ══════════════════════════════════════════════════════════════════ */
+window.__LG_PARAMS = new URLSearchParams(location.search);
+window.__LG_THEME = window.__LG_PARAMS.get('theme') === 'light' ? 'light' : 'dark';
+window.__LG_WALLPAPER = window.__LG_PARAMS.get('wallpaper') !== '0';
+
+try {
+  const mem = new Map();
+  Object.defineProperty(window, 'localStorage', {
+    configurable: true,
+    value: {
+      getItem: (k) => (mem.has(String(k)) ? mem.get(String(k)) : null),
+      setItem: (k, v) => { mem.set(String(k), String(v)); },
+      removeItem: (k) => { mem.delete(String(k)); },
+      clear: () => { mem.clear(); },
+      key: (i) => Array.from(mem.keys())[i] ?? null,
+      get length() { return mem.size; },
+    },
+  });
+} catch (e) { /* 已经有可用的 localStorage 就算了 */ }
+
+/* 宿主半体桩：声明「服务不存在」，插件会退回内置背景层 */
+(function () {
+  const real = window.fetch ? window.fetch.bind(window) : null;
+  window.fetch = function (input, init) {
+    const url = typeof input === 'string' ? input : (input && input.url) || '';
+    if (/^https?:\/\/127\.0\.0\.1:3932\d\//.test(url)) {
+      return Promise.reject(new TypeError('lg-harness: 宿主半体未运行（验证台桩）'));
+    }
+    return real ? real(input, init) : Promise.reject(new TypeError('no fetch'));
+  };
+  window.__LG_FETCH_STUBBED = true;
+})();
+
+/* ══════════════════════════════════════════════════════════════════
+ * 1. __ModuleLoader__ 桩
+ *    真实 DSH 的客户端模块加载器：load({id, factory}) 之后由框架调用
+ *    factory(require) 拿到模块导出；插件导出的是 { apply(ctx) }（Cordis 插件），
+ *    框架随后调用 apply(ctx)。
+ *    本验证台照做：拿到导出后立刻 apply，ctx 给最小桩（effect 注册即忽略）。
+ * ══════════════════════════════════════════════════════════════════ */
+window.__LG_LOADED = [];
+window.__LG_ERRORS = [];
+window.__ModuleLoader__ = {
+  load(spec) {
+    const id = spec && spec.id;
+    window.__LG_LOADED.push(id);
+    try {
+      const exports = spec.factory(function require(name) {
+        throw new Error('lg-harness: 插件不该 require 别的模块（要的是 ' + name + '）');
+      });
+      if (exports && typeof exports.apply === 'function') {
+        // 最小 ctx：只提供 effect（清理钩子）。插件用它注册 cleanup，这里立即忽略。
+        exports.apply({ effect: () => () => {} });
+        window.__LG_APPLIED = id;
+      } else {
+        window.__LG_ERRORS.push('模块 ' + id + ' 没有导出 apply(ctx)');
+      }
+    } catch (error) {
+      window.__LG_ERRORS.push('加载 ' + id + ' 失败: ' + (error && error.message));
+    }
+  },
+};
+
+/* ══════════════════════════════════════════════════════════════════
+ * 2. 主题令牌（模拟 ThemePresenter 写在 <body> 上的内联样式）
+ *
+ *    真实 DSH 的 alias 调色板来自 ui-theme 的基础样式表（打包后是
+ *    design-platform.css / base.css 两个长字符串）。本验证台的两套
+ *    调色板按 **DSH 自己的静态色阶**取值（--dsw-static-neutral-bluish-*，
+ *    逐字来自 dsh-client-ui-theme），数值可能与真实 alias 略有出入，
+ *    但「深色底 / 浅色底」这个事实与插件据此做的明暗判断是等价的。
+ * ══════════════════════════════════════════════════════════════════ */
+const LG_PALETTES = {
+  dark: {
+    '--dsw-alias-bg-base':              '#0f1115',   // neutral-bluish-1000
+    '--dsw-alias-bg-layer-1':           '#212123',   // neutral-850
+    '--dsw-alias-bg-layer-2':           '#292929',   // neutral-800
+    '--dsw-alias-bg-overlay':           '#292929',
+    '--dsw-alias-bg-mask-1':            'rgba(0,0,0,.55)',
+    '--dsw-specific-sidebar-fill':      '#16181d',
+    '--dsw-specific-input-major':       '#292929',
+    '--dsw-alias-border-l1':            'rgba(255,255,255,.08)',
+    '--dsw-alias-border-l2':            'rgba(255,255,255,.14)',
+    '--dsw-alias-border-l3':            'rgba(255,255,255,.10)',
+    '--dsw-alias-label-primary':        '#f5f5f5',
+    '--dsw-alias-label-secondary':      '#a2a4a6',
+    '--dsw-alias-label-tertiary':       '#7f8287',
+    '--dsw-alias-brand-primary':        '#4176e6',
+    '--dsw-alias-state-warn-primary':   '#f7ad31',
+    '--dsw-alias-state-warn-secondary': '#f59e0b',
+    '--dsw-alias-state-warn-tertiary':  'rgba(245,158,11,.16)',
+    '--dsw-alias-state-error-primary':  '#f16a6a',
+    '--dsw-alias-state-success-primary':'#4ed17e',
+    '--dsw-alias-state-idle-primary':   '#979da6',
+    '--dsw-alias-interactive-bg-hover': 'rgba(255,255,255,.08)',
+    '--dsw-alias-interactive-bg-hover-danger': 'rgba(241,106,106,.14)',
+  },
+  light: {
+    '--dsw-alias-bg-base':              '#ffffff',
+    '--dsw-alias-bg-layer-1':           '#fafafa',   // neutral-50
+    '--dsw-alias-bg-layer-2':           '#f5f5f5',   // neutral-100
+    '--dsw-alias-bg-overlay':           '#ffffff',
+    '--dsw-alias-bg-mask-1':            'rgba(15,17,21,.32)',
+    '--dsw-specific-sidebar-fill':      '#f5f5f5',
+    '--dsw-specific-input-major':       '#ffffff',
+    '--dsw-alias-border-l1':            'rgba(15,17,21,.08)',
+    '--dsw-alias-border-l2':            'rgba(15,17,21,.14)',
+    '--dsw-alias-border-l3':            'rgba(15,17,21,.10)',
+    '--dsw-alias-label-primary':        '#0f0f0f',   // neutral-900
+    '--dsw-alias-label-secondary':      '#545557',   // neutral-600
+    '--dsw-alias-label-tertiary':       '#7f8287',   // neutral-500
+    '--dsw-alias-brand-primary':        '#2563eb',
+    '--dsw-alias-state-warn-primary':   '#dd8629',
+    '--dsw-alias-state-warn-secondary': '#f59e0b',
+    '--dsw-alias-state-warn-tertiary':  'rgba(247,173,49,.16)',
+    '--dsw-alias-state-error-primary':  '#dc2626',
+    '--dsw-alias-state-success-primary':'#22c55e',
+    '--dsw-alias-state-idle-primary':   '#979da6',
+    '--dsw-alias-interactive-bg-hover': 'rgba(15,17,21,.06)',
+    '--dsw-alias-interactive-bg-hover-danger': 'rgba(220,38,38,.10)',
+  },
+};
+
+/* 与主题无关的尺寸/字体令牌（真实来源：base.css / gradient-shadow-text.css） */
+const LG_COMMON_TOKENS = {
+  '--dsw-radius-xs': '4px', '--dsw-radius-sm': '8px', '--dsw-radius-md': '12px',
+  '--dsw-radius-lg': '16px', '--dsw-radius-xl': '20px', '--dsw-radius-panel': '28px',
+  '--ds-font-family-code': '"SF Mono", "JetBrains Mono", Consolas, Menlo, monospace',
+  '--ds-transition-duration': '.2s', '--ds-ease-in-out': 'cubic-bezier(.4, 0, .2, 1)',
+  '--dsh-chat-content-width': '860px',
+  '--dsh-composer-text-max-height': '320px',
+  '--dsh-composer-side-clearance': '16px',
+  '--dsw-shadow-lv2': '0 4px 12px 0 #0000000d, 0 2px 8px 0 #0000000a',
+  '--dsw-elevation-prominent': '0 0 0 .5px rgba(0,0,0,.2), 0 3px 8px 0 #0000000a, 0 0 20px 0 #0000000d',
+};
+
+function lgApplyTheme() {
+  const dark = window.__LG_THEME !== 'light';
+  const palette = LG_PALETTES[dark ? 'dark' : 'light'];
+  // ThemePresenter 的做法：令牌作为内联样式写上去
+  for (const [k, v] of Object.entries({ ...LG_COMMON_TOKENS, ...palette })) {
+    document.body.style.setProperty(k, v);
+  }
+  document.documentElement.style.colorScheme = dark ? 'dark' : 'light';
+  if (dark) document.body.setAttribute('data-ds-dark-theme', '');
+  else document.body.removeAttribute('data-ds-dark-theme');
+  // 说明：--dsw-mask-blur 在 DSH 里默认是 none（gradient-shadow-text.css 里逐字如此），
+  // 这里保持真实默认值 none。它只影响弹窗遮罩，不影响本文的玻璃断言。
+  document.body.style.setProperty('--dsw-mask-blur', 'none');
+
+  // ?wallpaper=0：不铺高对比壁纸替身，只留 body 的中性底色。
+  // 两个场景都要跑：有壁纸时看「花背景上的可读性」，没壁纸时看「玻璃还有没有颜色」。
+  const wall = document.getElementById('mock-wallpaper');
+  if (wall) wall.style.display = window.__LG_WALLPAPER ? '' : 'none';
+}
+lgApplyTheme();
+
+/* ══════════════════════════════════════════════════════════════════
+ * 3. 重建 DSH 的 DOM
+ *    结构逐条对应 AppFrame 的真实渲染（见下方注释）。
+ *    data-testid 是**验证台自己的锚点**（插件不认），verify.mjs 靠它定位；
+ *    插件若没给区域打标记，锚点仍然在，断言照样失败 —— 不会被掩盖。
+ * ══════════════════════════════════════════════════════════════════ */
+const LG_SIDEBAR_W = 280;                              // layout: layoutInfo.sidebar || 280
+const LG_RIGHTBAR_W = Math.round(1600 * 0.45);         // layout: viewport * .45
+
+function lgEl(tag, attrs, children) {
+  const el = document.createElement(tag);
+  if (attrs) for (const [k, v] of Object.entries(attrs)) {
+    if (v === false || v == null) continue;
+    if (v === true) el.setAttribute(k, '');
+    else if (k === 'text') el.textContent = String(v);
+    else if (k === 'html') el.innerHTML = String(v);
+    else el.setAttribute(k, String(v));
+  }
+  for (const child of children || []) el.appendChild(child);
+  return el;
+}
+function mockButton(label, cls) {
+  return lgEl('button', { type: 'button', class: 'mock-btn' + (cls ? ' ' + cls : ''), text: label });
+}
+
+function lgBuildRoot() {
+  const root = document.getElementById('root');
+  root.replaceChildren();
+
+  /* ── 左侧会话列表内容（真实 DSH 由 sidebar slot 渲染）───────── */
+  const sessions = ['重构 verify.mjs 的报告解析', '液态玻璃：侧栏与右栏', '把壁纸层接到内置背景', '审批卡片毛玻璃', 'Modal 遮罩对比度', '打包与安装说明'];
+  const side = lgEl('div', { class: 'mock-side', 'data-testid': 'sidebar-content' }, [
+    lgEl('div', { class: 'mock-brand', text: 'DeepSeek Harness' }),
+    ...sessions.map((t, i) => lgEl('button', {
+      type: 'button', class: 'mock-item', 'data-testid': 'sidebar-item',
+      'aria-current': i === 1 ? 'page' : false,
+    }, [lgEl('i', { class: 'mock-dot' }), lgEl('span', { text: t })])),
+    lgEl('div', { class: 'mock-foot' }, [
+      mockButton('设置'), mockButton('新建会话'), mockButton('帮助'),
+    ]),
+  ]);
+
+  /* ── 中间：会话滚动区 ──────────────────────────────────────── */
+  const bubbles = [];
+  for (let i = 0; i < 4; i++) {
+    bubbles.push(lgEl('div', { class: 'mock-bubble user' }, [
+      lgEl('div', { class: 'mock-meta', text: '你 · 14:0' + i }),
+      lgEl('div', { text: '第 ' + (i + 1) + ' 条提问：这段文字故意压在壁纸的亮块和暗块上，用来判断可读性。' }),
+    ]));
+    bubbles.push(lgEl('div', { class: 'mock-bubble' }, [
+      lgEl('div', { class: 'mock-meta', text: 'DSH · 14:0' + i }),
+      lgEl('div', { text: '回答正文。卡片自带底色时，全透明方案会把它清掉，于是文字直接压在壁纸上 —— 这正是要观察的。' }),
+      lgEl('div', { class: 'mock-code', text: 'backdrop-filter: blur(7px) saturate(1.7) url(#dshlg-refract);' }),
+    ]));
+  }
+  const scroll = lgEl('div', { class: 'mock-scroll', 'data-testid': 'conversation-scroll' }, bubbles);
+
+  /* ── 中间底部：输入卡片（composer）───────────────────────────
+     插件的判据：从 [contenteditable=true] 向上找第一个「圆角 ≥ 4px 且
+     内部 ≥ 2 个按钮」的祖先 → .mock-composer。多一个按钮行会让
+     「工具栏」判据命中更外层，所以这里只留一行。 */
+  const editor = lgEl('div', {
+    class: 'mock-editor', contenteditable: 'true', role: 'textbox',
+    'aria-label': '输入消息', 'data-testid': 'composer-input',
+    'data-placeholder': '给 DSH 发消息…',
+  });
+  editor.textContent = '把审批卡片也做成毛玻璃';
+  const btnRow = lgEl('div', { class: 'mock-row', 'data-testid': 'composer-btnrow' }, [
+    mockButton('＋'), mockButton('@'), mockButton('工具'),
+    lgEl('div', { class: 'mock-spacer' }),
+    mockButton('发送', 'primary'),
+  ]);
+  const composer = lgEl('div', { class: 'mock-composer', 'data-testid': 'composer-card' }, [editor, btnRow]);
+  const center = lgEl('div', { class: 'mock-center' }, [scroll, lgEl('div', { class: 'mock-bottom' }, [composer])]);
+
+  /* ── 审批卡片（真实结构：approval/lib/client.js 的 ApprovalFlow）──
+     div[data-approval-key] > div.card > [div.strip, div.body, div.actionRow]
+     放在会话流里（不是 composer 子树），这样它既渲染在聊天框上方，
+     又不会干扰插件的「工具栏」判据。 */
+  const approvalCard = lgEl('div', { class: 'EpEjdW_card', 'data-testid': 'approval-card' }, [
+    lgEl('div', { class: 'EpEjdW_strip', 'data-testid': 'approval-strip' }, [
+      lgEl('span', { text: '等待确认' }),
+    ]),
+    lgEl('div', { class: 'EpEjdW_body', 'data-approval-scroll': '', tabindex: '0', role: 'group', 'aria-label': '详情' }, [
+      lgEl('div', { class: 'EpEjdW_headline', text: '是否允许执行 shell 命令？' }),
+      lgEl('div', { class: 'EpEjdW_command', text: 'Remove-Item -Recurse -Force .\\build' }),
+    ]),
+    lgEl('div', { class: 'EpEjdW_actionRow' }, [mockButton('拒绝'), mockButton('允许一次', 'primary')]),
+  ]);
+  const approval = lgEl('div', { class: 'EpEjdW_root', 'data-approval-key': 'lg-harness-1', 'data-testid': 'approval-root' }, [approvalCard]);
+  scroll.appendChild(approval);
+
+  /* ── 左栏（真实：AppFrame 的 sidebarCol，宽度 = layoutInfo.sidebar || 280）── */
+  const sidebarCol = lgEl('div', { class: 'ZTP-Xa_sidebarCol', 'data-testid': 'sidebar-col' }, [side]);
+
+  /* ── 中栏（真实：CenterColumn → .ZTP-Xa_centerCol）───────────── */
+  const centerCol = lgEl('div', { class: 'ZTP-Xa_centerCol', 'data-testid': 'center-col' }, [center]);
+
+  /* ── 右栏（真实：RightbarColumn → .ZTP-Xa_rightbarCol[data-rightbar-col]
+       内含 sidebar-right 的 .LdcXKW_panel，右贴边、占 viewport*0.45）───
+     `?rightbar=closed` 复现**收起**态：DSH 收起是给面板去掉
+     `data-sidebar-right-open` 并把 dock 宿主设成 `visibility: hidden`
+     （不是把轨道删掉）—— 所以这里照抄那两件事，轨道照旧留着。 */
+  const rightbarClosed = window.__LG_PARAMS.get('rightbar') === 'closed';
+  const rightPanel = lgEl('div', {
+    class: 'lg-right-panel mock-right',
+    'data-testid': 'right-panel-content',
+    style: 'width:' + LG_RIGHTBAR_W + 'px' + (rightbarClosed ? ';visibility:hidden' : ''),
+  }, [
+    lgEl('div', { class: 'mock-right-head', 'data-testid': 'right-panel-head' }, [
+      lgEl('span', { text: '文件' }), lgEl('div', { class: 'mock-spacer' }),
+      mockButton('↻'), mockButton('⋯'),
+    ]),
+    lgEl('div', { class: 'mock-right-body' }, [
+      lgEl('div', { class: 'mock-file', text: 'client.js' }),
+      lgEl('div', { class: 'mock-file', text: 'index.js' }),
+      lgEl('div', { class: 'mock-file', text: 'README.md' }),
+      lgEl('div', { class: 'mock-file', text: 'test/harness.html' }),
+      lgEl('div', { class: 'mock-file', text: 'test/verify.mjs' }),
+    ]),
+    lgEl('div', { class: 'mock-right-foot' }, [mockButton('在编辑器中打开'), mockButton('复制路径')]),
+  ]);
+  if (!rightbarClosed) rightPanel.setAttribute('data-sidebar-right-open', '');
+  const rightbarCol = lgEl('div', {
+    class: 'ZTP-Xa_rightbarCol', 'data-rightbar-col': '', 'data-testid': 'rightbar-col',
+  }, [rightPanel]);
+
+  /* ── 弹窗（真实：primitives 的 Modal，渲染在 shell.overlay 里）──
+     为截图干净，用 ?modal=1 打开（默认不渲染）。 */
+  const overlays = lgEl('div', { style: 'display:none', 'data-testid': 'modal-host' });
+  if (window.__LG_PARAMS.get('modal') === '1') {
+    overlays.style.display = '';
+    overlays.appendChild(lgEl('div', { class: 'lgModal_root' }, [
+      lgEl('div', { class: 'lgModal_mask' }),
+      lgEl('div', { class: 'lgModal_dialog', role: 'dialog', 'aria-modal': 'true', 'data-testid': 'modal-dialog' }, [
+        lgEl('h2', { class: 'lgModal_title', text: '删除工作区？' }),
+        lgEl('p', { class: 'lgModal_body', text: '这个操作不可撤销，里面的会话记录会一起删除。' }),
+        lgEl('div', { class: 'lgModal_footer' }, [mockButton('取消'), mockButton('删除', 'primary')]),
+      ]),
+    ]));
+  }
+
+  /* ── 组装（照抄 AppFrame 的 grid 内联样式）────────────────────
+     gridTemplateColumns: `${cols.sidebar}px minmax(${cols.rightbar===0?0:400}px,1fr) minmax(0px,${rightbarMax}px)` */
+  const frame = lgEl('div', {
+    class: 'ZTP-Xa_frame', 'data-testid': 'frame',
+    style: 'height:100vh;width:100vw;grid-template-columns:' +
+      LG_SIDEBAR_W + 'px minmax(400px, 1fr) minmax(0px, ' + LG_RIGHTBAR_W + 'px)',
+  }, [
+    sidebarCol, centerCol, rightbarCol,
+    lgEl('div', { class: 'ZTP-Xa_overlayLayer', 'data-shell-overlay': '' }, [overlays]),
+  ]);
+
+  root.appendChild(frame);
+}
+lgBuildRoot();
+
+/* ?focus=approval：先滚一次。审批卡挂在会话流最底部，默认被折到视口外 ——
+   前四张截图里它一次都没出现过，「这块面到底长什么样、字压上去读不读得清」
+   恰恰是只能靠眼睛看的那件事，所以要专门给它一张截图。 */
+lgFocusTarget();
+
+/* ══════════════════════════════════════════════════════════════════
+ * 4. 加载**真实插件**：不复制、不改写，直接执行 client.js
+ *
+ *    默认走相对路径 ../client.js（验证台就该放在 <插件目录>/test/ 下）。
+ *    也可以用 ?client=<绝对路径> 显式指定 —— 便于验证台与被测插件
+ *    不在同一目录时（例如验证台还在暂存区）跑同一份真实产物，
+ *    这样就不需要为了跑测试而复制一份 client.js。
+ * ══════════════════════════════════════════════════════════════════ */
+window.__LG_CLIENT_SRC = window.__LG_PARAMS.get('client') || '../client.js';
+(function () {
+  const s = document.createElement('script');
+  s.src = window.__LG_CLIENT_SRC;
+  s.onerror = () => {
+    window.__LG_ERRORS.push('加载插件失败：' + window.__LG_CLIENT_SRC +
+      '（相对路径时验证台必须放在 <插件目录>/test/ 下；否则用 ?client=<绝对路径>）');
+  };
+  document.head.appendChild(s);
+})();
+
+/* ══════════════════════════════════════════════════════════════════
+ * 5. 报告：把真实的 getComputedStyle 事实写进 <pre id="report">
+ *    verify.mjs 用 --dump-dom 读它，然后自己判 PASS/FAIL。
+ *    —— 判定逻辑放在 Node 侧，验证台只负责「报告事实」，不自己下结论。
+ * ══════════════════════════════════════════════════════════════════ */
+function lgAlpha(color) {
+  if (!color) return null;
+  const m = String(color).match(/rgba?\(([^)]+)\)/);
+  if (!m) return String(color) === 'transparent' ? 0 : null;
+  const parts = m[1].split(/[\s,/]+/).filter(Boolean);
+  return parts.length >= 4 ? Number(parts[3]) : 1;
+}
+function lgRegion(key, selector, spec) {
+  const el = selector ? document.querySelector(selector) : null;
+  // spec 只是给报告读者看的标签，verify.mjs 不依赖它
+  const out = { key, selector, present: !!el, spec: spec ?? null };
+  if (!el) return out;
+  /* ⚠️ 先强制一次样式重算再读数。
+     踩过的坑：插件改的是 `<style>` 内容 + 元素属性，浏览器可能还没重算，
+     于是 getComputedStyle 会返回**改之前**的值 —— 报告里出现过
+     「收起态 bg=rgb(33,33,35)」这种与真值相反的结果，
+     而同一个页面用 CDP 真实等待后读，是 rgba(0,0,0,0)。
+     读 layout 属性即可 flush 待处理的样式变更。 */
+  void el.offsetHeight;
+  let cs = null;
+  try { cs = getComputedStyle(el); } catch { /* ignore */ }
+  if (!cs) return out;
+  void el.offsetHeight;
+  const rect = el.getBoundingClientRect();
+  out.tag = el.tagName.toLowerCase();
+  out.classes = el.className && typeof el.className === 'string' ? el.className : '';
+  out.dshlg = el.getAttribute('data-dshlg');
+  /* 插件打的「收起态」标记：右栏收起后应当有它，且该区域必须全透明无模糊 */
+  out.closed = el.hasAttribute('data-dshlg-closed');
+  /* 注意字段名不能叫 region —— 报告里 region 已经是 lgRegion() 的 spec 标签 */
+  out.dshlgRegion = el.getAttribute('data-dshlg-region');
+  out.rect = { x: Math.round(rect.x), y: Math.round(rect.y), w: Math.round(rect.width), h: Math.round(rect.height) };
+  out.bgColor = cs.backgroundColor;
+  out.bgAlpha = lgAlpha(cs.backgroundColor);
+  out.bgImage = cs.backgroundImage;
+  out.bgGradient = /gradient\(/.test(cs.backgroundImage || '');
+  out.blur = cs.backdropFilter || cs.webkitBackdropFilter || 'none';
+  out.hasBlur = /blur\(/.test(out.blur);
+  out.radius = cs.borderTopLeftRadius;
+  out.color = cs.color;
+  /* iOS 26 玻璃的底色写在 `--dshlg-alpha` 上（v1.9.2 起），
+     不再用 `--dshlg-tint` 那条渐变。两个都报出去，验证器按新的判。 */
+  out.alphaVar = cs.getPropertyValue('--dshlg-alpha').trim();
+  out.tintVar = out.alphaVar || cs.getPropertyValue('--dshlg-tint').trim().slice(0, 140);
+  out.textShadow = cs.textShadow;
+  // 文字样本：该区域里第一个有文字的元素（用来判断「文字是否压在全透明背景上」）
+  const textEl = Array.from(el.querySelectorAll('*')).find((n) => (n.textContent || '').trim().length > 0);
+  if (textEl) {
+    out.textSample = (textEl.textContent || '').trim().slice(0, 40);
+    try { out.textColor = getComputedStyle(textEl).color; } catch { /* ignore */ }
+  }
+  return out;
+}
+
+function lgSubRegions(key, parentSelector, childSelector, spec, limit) {
+  const parent = document.querySelector(parentSelector);
+  const out = [];
+  if (!parent) return out;
+  for (const child of Array.from(parent.querySelectorAll(childSelector)).slice(0, limit || 12)) {
+    const cs = getComputedStyle(child);
+    const rect = child.getBoundingClientRect();
+    out.push({
+      key, spec,
+      tag: child.tagName.toLowerCase(),
+      text: (child.textContent || '').trim().slice(0, 24),
+      rect: { x: Math.round(rect.x), y: Math.round(rect.y), w: Math.round(rect.width), h: Math.round(rect.height) },
+      bgColor: cs.backgroundColor,
+      bgAlpha: lgAlpha(cs.backgroundColor),
+      bgImage: cs.backgroundImage,
+      bgGradient: /gradient\(/.test(cs.backgroundImage || ''),
+      blur: cs.backdropFilter || cs.webkitBackdropFilter || 'none',
+      hasBlur: /blur\(/.test(cs.backdropFilter || cs.webkitBackdropFilter || ''),
+      radius: cs.borderTopLeftRadius,
+      // 次要文字也要报颜色：verify.mjs 那边「次要文字只报告不判死」那行要用它
+      color: cs.color,
+      insideGlass: !!child.closest('[data-dshlg-region], .dshlg-glass, .dshlg-toolbar'),
+      dshlgSelf: child.getAttribute('data-dshlg'),
+    });
+  }
+  return out;
+}
+
+function lgBuildReport() {
+  const regions = [
+    // 中栏/工作区：用户硬要求「完全透明、不许有背景色、不许有 backdrop-filter」
+    lgRegion('center', '[data-testid="center-col"]', 'transparent'),
+    // 左栏：必须有毛玻璃（非零 tint + blur）
+    lgRegion('sidebar', '[data-testid="sidebar-col"]', 'frosted'),
+    // 右栏
+    // 右栏：**真正有内容的那块面板**（.LdcXKW_panel 等价物），才是字压在哪就测哪
+    lgRegion('rightPanel', '[data-testid="right-panel-content"]', 'frosted'),
+    // 收起态：同一个面板，收起后必须是**全透明无模糊**（不能留一条模糊空带子）
+    lgRegion('rightPanelClosed', '[data-testid="right-panel-content"]', 'transparent'),
+    lgRegion('rightbarTrack', '[data-testid="rightbar-col"]', 'report'),
+    // 审批卡片 / 弹窗：卡面（有圆角、有文字的那张）才是要测的面，
+    // 不能只测外层容器 —— 外层套了玻璃、卡面全透明的话，字照样压在壁纸上。
+    lgRegion('approvalCard', '[data-testid="approval-card"]', 'frosted'),
+    lgRegion('approvalStrip', '[data-testid="approval-strip"]', 'report'),
+    lgRegion('modalDialog', '[data-testid="modal-dialog"]', 'frosted'),
+    lgRegion('modalMask', '.lgModal_mask', 'report'),
+    // 输入区
+    lgRegion('composerCard', '[data-testid="composer-card"]', 'frosted'),
+    lgRegion('composerInput', '[data-testid="composer-input"]', 'input'),
+    lgRegion('composerBtnRow', '[data-testid="composer-btnrow"]', 'report'),
+    // 插件自己注入的东西（用于诊断）
+    lgRegion('pluginBackdrop', '#dshlg-backdrop', 'report'),
+    lgRegion('pluginWall', '#dshlg-wall', 'report'),
+    lgRegion('pluginControls', '#dshlg-controls', 'report'),
+    lgRegion('pluginBanner', '#dshlg-banner', 'report'),
+    lgRegion('wallpaperMock', '#mock-wallpaper', 'report'),
+  ];
+
+  const subRegions = [
+    ...lgSubRegions('sidebarButton', '[data-testid="sidebar-col"]', 'button', 'readable', 30),
+    ...lgSubRegions('rightPanelButton', '[data-testid="right-panel-content"]', 'button', 'readable', 30),
+    ...lgSubRegions('rightPanelFile', '[data-testid="right-panel-content"]', '.mock-file', 'readable', 30),
+    ...lgSubRegions('centerBubble', '[data-testid="center-col"]', '.mock-bubble', 'readable', 30),
+  ];
+
+  return {
+    harness: 'dsh-liquid-glass verification harness',
+    href: location.href,
+    theme: window.__LG_THEME,
+    // ?focus=approval 时说明「这张截图特意把审批卡滚进了视口」，让报告自解释
+    focus: window.__LG_PARAMS.get('focus') || null,
+    viewport: { w: window.innerWidth, h: window.innerHeight },
+    moduleLoader: { loaded: window.__LG_LOADED, applied: window.__LG_APPLIED || null },
+    clientSrc: window.__LG_CLIENT_SRC,
+    errors: window.__LG_ERRORS.slice(),
+    plugin: {
+      styleTag: !!(document.getElementById('dshlg-style') || document.getElementById('dshlg-critical')),
+      svgFilter: !!document.getElementById('dshlg-svg'),
+      taggedGlass: Array.from(document.querySelectorAll('[data-dshlg]')).map((el) => ({
+        cls: el.getAttribute('data-dshlg'),
+        tag: el.tagName.toLowerCase(),
+        testid: el.getAttribute('data-testid') || null,
+        buttons: el.querySelectorAll('button').length,
+      })),
+      /* 每个被标记的元素再报一遍**真实层叠结果** ——
+         用来区分「插件没打这个标记」和「打了但样式没生效」。 */
+      taggedFacts: Array.from(document.querySelectorAll('[data-dshlg]')).map((el) => {
+        const cs = getComputedStyle(el);
+        return {
+          cls: el.getAttribute('data-dshlg'),
+          testid: el.getAttribute('data-testid') || null,
+          region: el.getAttribute('data-dshlg-region'),
+          /* 收起态（插件标记）：这块面是**故意**全透明的，兜底自查要放行 */
+          closed: el.hasAttribute('data-dshlg-closed'),
+          bgImage: cs.backgroundImage.slice(0, 70),
+          /* v1.9.2 起底色写在 --dshlg-alpha（数值），退回旧的 --dshlg-tint 只为兼容 */
+          alphaVar: cs.getPropertyValue('--dshlg-alpha').trim(),
+          tintVar:
+            cs.getPropertyValue('--dshlg-alpha').trim() ||
+            cs.getPropertyValue('--dshlg-tint').trim().slice(0, 60),
+          filterVar: cs.getPropertyValue('--dshlg-filter').trim(),
+          backdrop: (cs.backdropFilter || cs.webkitBackdropFilter || 'none').slice(0, 80),
+        };
+      }),
+    },
+    tokens: { bodyBgBase: getComputedStyle(document.body).getPropertyValue('--dsw-alias-bg-base').trim() },
+    regions,
+    subRegions,
+  };
+}
+
+/* ?focus=approval：把审批卡滚进视口中间。
+   验证台只做「滚动」这一件事 —— 不改插件、不改 DOM 结构、不碰样式，
+   所以它不会掩盖任何问题；verify.mjs 那边还会断言审批卡的 rect 真的落在视口内，
+   滚不动（或没滚）那张截图会被判 FAIL，而不是静默地拍一张看不见审批卡的图。 */
+function lgFocusTarget() {
+  if (window.__LG_PARAMS.get('focus') !== 'approval') return;
+  const card = document.querySelector('[data-testid="approval-card"]');
+  if (!card) return;
+  try { card.scrollIntoView({ block: 'center', inline: 'nearest' }); } catch (e) { /* 老引擎忽略 */ }
+}
+
+function lgPublish(report) {
+  const data = report || lgBuildReport();
+  let json;
+  try { json = JSON.stringify(data); } catch (e) { json = JSON.stringify({ errors: ['报告序列化失败: ' + e.message] }); }
+  const pre = document.getElementById('report') || (() => {
+    const p = document.createElement('pre');
+    p.id = 'report';
+    p.hidden = true;
+    document.body.appendChild(p);
+    return p;
+  })();
+  pre.textContent = json;
+  window.__LG_REPORT_READY = true;
+}
+
+/* 等插件把样式和标记落地：轮询到「报告内容稳定」为止（最多 8s）。
+   用轮询而不是只看一个定时器，是因为插件自己有 300ms 防抖 + 异步探端口。
+
+   关键：必须先确认**插件已经跑过**（window.__LG_APPLIED 有值）才开始数「稳定」。
+   否则插件脚本还没下载完时，报告就已经连续 3 次相同了 —— 那会得到一份
+   「插件没加载」的假报告，把「验证台太心急」误报成「插件没打标记」。 */
+(function lgSettle() {
+  let last = '';
+  let stable = 0;
+  let ticks = 0;
+  const timer = setInterval(() => {
+    ticks += 1;
+    let snapshot = 'ERR';
+    let report = null;
+    try {
+      report = lgBuildReport();
+      snapshot = JSON.stringify(report);
+    } catch (e) {
+      snapshot = 'ERR:' + (e && e.message);
+    }
+    const pluginRan = !!window.__LG_APPLIED;
+    if (pluginRan && snapshot === last) stable += 1; else { stable = 0; last = snapshot; }
+    // 连续 3 次不变（约 600ms）即认为稳定；也留一个上限
+    if ((pluginRan && stable >= 3) || ticks > 40) {
+      clearInterval(timer);
+      if (!pluginRan) {
+        window.__LG_ERRORS.push('等了 ' + ticks + ' 轮（约 ' + (ticks * 200) + 'ms）插件仍未被 apply —— ' +
+          '要么 client.js 没加载（看 clientSrc），要么它在 apply 之前就抛了（看上面 errors）');
+      }
+      /* 发布前再滚一次并重新取报告：报告里的 rect 必须和截图是同一时刻的状态。
+         ⚠️ 但 scrollIntoView 会触发插件的 MutationObserver → 它重跑一遍 pass()，
+         于是「刚滚完就取报告」很可能取到**这一遍还没落地**的中间态
+         （实测过：收起态被报成 bg=rgb(33,33,35) 且有 blur，与真值相反）。
+         所以滚动之后要**再等它稳定一次**，取最后一份稳定快照。 */
+      lgFocusTarget();
+      let lastFresh = '';
+      let freshStable = 0;
+      let freshTicks = 0;
+      const freshTimer = setInterval(() => {
+        freshTicks += 1;
+        let fresh = null;
+        let snap = 'ERR';
+        try { fresh = lgBuildReport(); snap = JSON.stringify(fresh); } catch (e) { snap = 'ERR:' + (e && e.message); }
+        if (snap === lastFresh) freshStable += 1; else { freshStable = 0; lastFresh = snap; }
+        if (freshStable >= 2 || freshTicks > 15) {
+          clearInterval(freshTimer);
+          lgPublish(fresh || report);
+        }
+      }, 250);
+    }
+  }, 200);
+})();
+</script>
+</body>
+</html>

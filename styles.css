@@ -1,0 +1,415 @@
+/* dsh-liquid-glass · 静态材质样式（iOS 26 Liquid Glass）
+ *
+ * 这个文件是**纯静态**的：所有随主题/配置变化的值都走 CSS 自定义属性
+ * （--dshlg-* ），由 lib/client.js 在运行时写到元素或 :root 上。
+ * 好处：
+ *   · 一份实现只有一处（lib/client.js 不再内联大段 CSS）；
+ *   · 想调玻璃只改变量，不用碰 JS；
+ *   · 单元/浏览器验证可以直接 <link> 这个文件。
+ *
+ * 变量一览（都由 JS 写）：
+ *   --dshlg-alpha / --dshlg-sheen     底色与柔光强度
+ *   --dshlg-filter / --dshlg-filter-active   常态 / 交互态滤镜
+ *   --dshlg-radius / --dshlg-border / --dshlg-border-a   圆角与描边
+ *   --dshlg-topline / --dshlg-fresnel / --dshlg-fresnel-w  顶光与菲涅尔
+ *   --dshlg-shadow-y / --dshlg-shadow-blur / --dshlg-shadow-a  浮动阴影
+ *   --dshlg-chroma / --dshlg-chroma-a   最外缘色差
+ *   --dshlg-mx / --dshlg-my             指针高光位置
+ *   --dshlg-edge-mid / --dshlg-edge-inner  边缘透镜的 mask 过渡点
+ */
+
+:root {
+  --dshlg-tone: 255, 255, 255;
+  --dshlg-alpha: 0.08;
+  --dshlg-radius: 20px;
+  --dshlg-border: 1px;
+  --dshlg-border-a: 0.18;
+  --dshlg-topline: 0.3;
+  --dshlg-fresnel: 0.22;
+  --dshlg-fresnel-w: 6px;
+  --dshlg-shadow-y: 8px;
+  --dshlg-shadow-blur: 32px;
+  --dshlg-shadow-a: 0.35;
+  --dshlg-chroma: 2px;
+  --dshlg-chroma-a: 0.22;
+  --dshlg-hi-boost: 1.5;
+  --dshlg-edge-mid: 6%;
+  --dshlg-edge-inner: 12.6%;
+  /* 品牌蓝（lib/client.js 会按主题重写 tone / a / filter） */
+  --dshlg-brand-tone: 77, 107, 254;
+  --dshlg-brand-a: 0.2;
+  --dshlg-brand-filter: none;
+}
+
+#dshlg-svg {
+  position: absolute;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+#dshlg-svg mask stop.stop-outer { stop-color: #fff; stop-opacity: 0.35; }
+#dshlg-svg mask stop.stop-mid { stop-color: #fff; stop-opacity: 0.158; }
+#dshlg-svg mask stop.stop-inner { stop-color: #000; stop-opacity: 0; }
+
+/* ── 一块 iOS 26 液态玻璃面 ──────────────────────────────
+   规格：8% 白纱 + 18px 模糊 + 1.6× 饱和 + 20px 圆角 + 1px 白 18% 描边
+        + 顶 1px 高光（30%）+ 菲涅尔边缘光 + 0 8px 32px 35% 浮动阴影
+        + 边缘 10~15% 内向折射 + 最外缘 ≤2px 低强度色差
+   激活（hover / 聚焦）：模糊减弱、折射与高光增强。 */
+#root [data-dshlg-region]:not(.dshlg-brand) {
+  position: relative;
+  box-sizing: border-box;
+  isolation: isolate;
+  background-color: rgba(var(--dshlg-tone, 255, 255, 255), var(--dshlg-alpha, 0.08)) !important;
+  background-image:
+    radial-gradient(140% 120% at 50% 0%,
+      rgba(255, 255, 255, var(--dshlg-sheen, 0.1)) 0%,
+      rgba(255, 255, 255, 0) 55%),
+    linear-gradient(180deg,
+      rgba(255, 255, 255, calc(var(--dshlg-alpha, 0.08) * 0.55)) 0%,
+      rgba(255, 255, 255, 0) 42%) !important;
+  border: var(--dshlg-border, 1px) solid rgba(255, 255, 255, var(--dshlg-border-a, 0.18)) !important;
+  border-radius: var(--dshlg-radius, 20px) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, var(--dshlg-topline, 0.3)),
+    inset 0 0 0 var(--dshlg-fresnel-w, 6px) rgba(255, 255, 255, var(--dshlg-fresnel, 0.22)),
+    inset 0 -1px 0 rgba(255, 255, 255, calc(var(--dshlg-fresnel, 0.22) * 0.5)),
+    0 var(--dshlg-shadow-y, 8px) var(--dshlg-shadow-blur, 32px)
+      rgba(0, 0, 0, var(--dshlg-shadow-a, 0.35)) !important;
+  backdrop-filter: var(--dshlg-filter);
+  -webkit-backdrop-filter: var(--dshlg-filter);
+  /* ⚠️ transition 只写在 :hover / :focus-within 那一档上。
+     如果写在基础规则上，**首次**把 backdrop-filter 从 none 换成实际滤镜时，
+     浏览器会沿着「none → blur(18px)」插值 —— 表现为刚进界面时玻璃
+     从「完全没模糊」缓慢涨上来（实测抓到中间值 blur(13.7px) saturate(1.46)），
+     看起来就是一次闪动/糊一下。挂在交互态上就只有用户操作时才做缓动。 */
+}
+#root [data-dshlg-region]:hover,
+#root [data-dshlg-region]:focus-within {
+  /* 只在交互态做缓动（模糊减弱、折射与高光增强） */
+  transition: backdrop-filter .3s cubic-bezier(.4, 0, .2, 1),
+    box-shadow .3s cubic-bezier(.4, 0, .2, 1),
+    background-color .3s cubic-bezier(.4, 0, .2, 1);
+  backdrop-filter: var(--dshlg-filter-active);
+  -webkit-backdrop-filter: var(--dshlg-filter-active);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, calc(var(--dshlg-topline, 0.3) * var(--dshlg-hi-boost, 1.5))),
+    inset 0 0 0 var(--dshlg-fresnel-w, 6px)
+      rgba(255, 255, 255, calc(var(--dshlg-fresnel, 0.22) * var(--dshlg-hi-boost, 1.5))),
+    inset 0 -1px 0 rgba(255, 255, 255, calc(var(--dshlg-fresnel, 0.22) * 0.5)),
+    0 var(--dshlg-shadow-y, 8px) var(--dshlg-shadow-blur, 32px)
+      rgba(0, 0, 0, var(--dshlg-shadow-a, 0.35)) !important;
+}
+
+/* 最外缘 ≤2px 的低强度彩虹色差（只贴边、不铺面） */
+#root [data-dshlg-region][data-dshlg-chroma="1"]::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  z-index: 0;
+  padding: var(--dshlg-chroma, 2px);
+  background: conic-gradient(from 0deg,
+    rgba(255, 0, 90, var(--dshlg-chroma-a, 0.22)) 0deg,
+    rgba(255, 200, 0, var(--dshlg-chroma-a, 0.22)) 60deg,
+    rgba(0, 255, 170, var(--dshlg-chroma-a, 0.22)) 130deg,
+    rgba(0, 140, 255, var(--dshlg-chroma-a, 0.22)) 200deg,
+    rgba(170, 0, 255, var(--dshlg-chroma-a, 0.22)) 280deg,
+    rgba(255, 0, 90, var(--dshlg-chroma-a, 0.22)) 360deg);
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  mix-blend-mode: screen;
+  opacity: .9;
+}
+
+/* 高光随指针滑移（--dshlg-mx/my 由 pointermove 写进来） */
+#root [data-dshlg-region][data-dshlg-spec="1"]::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  z-index: 1;
+  background:
+    radial-gradient(42% 30% at var(--dshlg-mx, 50%) var(--dshlg-my, 0%),
+      rgba(255, 255, 255, calc(var(--dshlg-spec-a, 0.14) * var(--dshlg-hi-boost, 1))),
+      rgba(255, 255, 255, 0) 70%);
+  opacity: 0;
+  transition: opacity .22s ease;
+}
+#root [data-dshlg-region][data-dshlg-spec="1"]:hover::after,
+#root [data-dshlg-region][data-dshlg-spec="1"]:focus-within::after { opacity: 1; }
+
+/* 分区只改圆角与「哪条边贴视口」 */
+#root [data-dshlg-region="side"] { border-radius: 0 var(--dshlg-radius, 20px) var(--dshlg-radius, 20px) 0 !important; }
+#root [data-dshlg-region="right"] { border-radius: var(--dshlg-radius, 20px) 0 0 var(--dshlg-radius, 20px) !important; }
+#root [data-dshlg-region="approval"] {
+  border-color: rgba(var(--dshlg-warn, 247, 173, 49), 0.45) !important;
+  border-radius: var(--dshlg-radius, 20px) !important;
+}
+#root [data-dshlg-region="modal"] { border-radius: var(--dshlg-radius, 20px) !important; }
+
+/* ── 降级三件套 ──────────────────────────────────────────
+   ① prefers-reduced-motion：不做指针滑移缓动、不做悬停过渡
+   ② prefers-reduced-transparency：玻璃变实色面板（不再透背景，也不再模糊）
+   ③ prefers-contrast: high：加强描边与高光，保证边界看得清 */
+@media (prefers-reduced-motion: reduce) {
+  #root [data-dshlg-region],
+  #root [data-dshlg-region]:hover,
+  #root [data-dshlg-region]:focus-within {
+    transition: none !important;
+  }
+  #root [data-dshlg-region][data-dshlg-spec="1"]::after { display: none !important; }
+}
+@media (prefers-reduced-transparency: reduce) {
+  #root [data-dshlg-region] {
+    background-color: rgba(var(--dshlg-tone, 255, 255, 255), 0.92) !important;
+    background-image: none !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+  }
+  #root [data-dshlg-region]::before,
+  #root [data-dshlg-region]::after { display: none !important; }
+}
+@media (prefers-contrast: high) {
+  #root [data-dshlg-region] {
+    border-color: rgba(255, 255, 255, 0.75) !important;
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.85),
+      inset 0 0 0 2px rgba(255, 255, 255, 0.4),
+      0 var(--dshlg-shadow-y, 8px) var(--dshlg-shadow-blur, 32px) rgba(0, 0, 0, 0.6) !important;
+  }
+}
+
+/* ── 玻璃预算：全局同时在跑的玻璃面 ≤ GLASS_BUDGET 处 ────────
+   模糊是滚动性能的头号杀手，所以超预算的面由 JS 打上
+   data-dshlg-glass-over，这里降级成「半透明实色 + 细描边」，
+   视觉上仍然是玻璃，但不再吃 backdrop-filter。 */
+[data-dshlg-glass-over] {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  background-color: rgba(var(--dshlg-tone, 255, 255, 255), calc(var(--dshlg-alpha, 0.08) * 2.4)) !important;
+}
+
+/* 中间工作区：**刻意全透明** —— 不给色、不给模糊、不留边。
+   整条 !important + 排在区域玻璃之后，压过上面所有声明。 */
+#root [data-dshlg-region="middle"],
+#root [data-dshlg-region="middle"] * {
+  background-color: transparent !important;
+  background-image: none !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+#root [data-dshlg-region="middle"] {
+  box-shadow: none !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+}
+#root [data-dshlg-region="middle"]::before,
+#root [data-dshlg-region="middle"]::after { content: none !important; }
+
+/* ── 右栏**收起后**：和工作区一样全透明 ───────────────────
+   DSH 收起右栏是把面板滑出视口并去掉 data-sidebar-right-open，
+   轨道那一格仍然占位。不给这一档，右边就留一条模糊空带子。
+
+   标记打在**整列**上，规则也覆盖列里每一层 —— 玻璃可能落在列内任何一层，
+   只清一层的话别的层照样模糊（这正是上一版没修干净的原因）。
+   放最后 + !important + 清掉所有 --dshlg-* 变量：
+   否则变量还留在计算样式里，看着「还是玻璃」，也容易骗过检查工具。 */
+#root [data-dshlg-region="right"][data-dshlg-closed],
+#root [data-dshlg-region="right"][data-dshlg-closed] * {
+  background-color: transparent !important;
+  background-image: none !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  box-shadow: none !important;
+  border-color: transparent !important;
+  --dshlg-alpha: 0;
+  --dshlg-sheen: 0;
+  --dshlg-border-a: 0;
+  --dshlg-topline: 0;
+  --dshlg-fresnel: 0;
+  --dshlg-chroma-a: 0;
+  --dshlg-spec-a: 0;
+  --dshlg-filter: none;
+  --dshlg-filter-active: none;
+}
+#root [data-dshlg-region="right"][data-dshlg-closed] {
+  border: 0 !important;
+  border-radius: 0 !important;
+}
+#root [data-dshlg-region="right"][data-dshlg-closed]::before,
+#root [data-dshlg-region="right"][data-dshlg-closed]::after { content: none !important; }
+
+
+/* ══════════════════════════════════════════════════════════
+   左侧栏 · 行级玻璃（会话项 / 新建会话 / 页脚按钮）
+   整列本身已有一层玻璃，行上再叠**很淡**的一层：视觉上像悬在列面上。
+   行**不做 backdrop 模糊** —— 一列十几行同时模糊会把预算和帧率一起吃光；
+   玻璃感由「淡底 + 1px 内高光 + 圆角」给出，在整列玻璃之上已经够。
+   ══════════════════════════════════════════════════════════ */
+#root .dshlg-bar {
+  background-color: rgba(var(--dshlg-tone, 255, 255, 255), 0.05) !important;
+  background-image: none !important;
+  border: 1px solid rgba(255, 255, 255, 0.06) !important;
+  border-radius: 10px !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  transition: background-color .18s ease, box-shadow .18s ease;
+}
+#root .dshlg-bar:hover {
+  background-color: rgba(var(--dshlg-tone, 255, 255, 255), 0.09) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18) !important;
+}
+
+/* ══════════════════════════════════════════════════════════
+   左上角品牌区 · 蓝色液态玻璃
+   只叠一层蓝色玻璃（径向 + 线性）在品牌行上，文字与 logo 原样保留 ——
+   不替换图标，DSH 升级后结构变了也不会崩。
+   蓝色强度 = --dshlg-brand-a（CONFIG.brand.alpha），设 0 即关闭。
+   ══════════════════════════════════════════════════════════ */
+/* ⚠️ 玻璃画在 ::before 上，行本身不碰 backdrop-filter ——
+   DSH 把「收起侧边栏」按钮放在 logoRow 内部且是 position:fixed，
+   backdrop-filter 会让行成为它的包含块，按钮就会压到品牌字上。 */
+#root .dshlg-brand::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: 14px;
+  background-color: rgba(var(--dshlg-brand-tone, 147, 197, 253),
+    calc(var(--dshlg-brand-a, 0.42) * 0.62));
+  border: 1px solid rgba(var(--dshlg-brand-tone, 147, 197, 253),
+    calc(var(--dshlg-brand-a, 0.42) * 1.6));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, calc(var(--dshlg-topline, 0.3) * 1.5)),
+    0 4px 18px rgba(0, 0, 0, 0.2);
+  backdrop-filter: var(--dshlg-brand-filter, none);
+  -webkit-backdrop-filter: var(--dshlg-brand-filter, none);
+}
+#root .dshlg-brand {
+  background-image: none !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  position: relative;
+  box-sizing: border-box;
+  isolation: isolate;
+  background-color: rgba(var(--dshlg-brand-tone, 77, 107, 254),
+    calc(var(--dshlg-brand-a, 0.2) * 0.62)) !important;
+  background-image:
+    radial-gradient(120% 160% at 12% 0%,
+      rgba(var(--dshlg-brand-tone, 77, 107, 254), calc(var(--dshlg-brand-a, 0.2) * 1.5)) 0%,
+      rgba(var(--dshlg-brand-tone, 77, 107, 254), 0) 62%),
+    linear-gradient(180deg,
+      rgba(255, 255, 255, calc(var(--dshlg-brand-a, 0.2) * 0.9)) 0%,
+      rgba(255, 255, 255, 0) 55%) !important;
+  border: 1px solid rgba(var(--dshlg-brand-tone, 77, 107, 254),
+    calc(var(--dshlg-brand-a, 0.2) * 1.6)) !important;
+  border-radius: 14px !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, calc(var(--dshlg-topline, 0.3) * 1.4)),
+    inset 0 0 12px rgba(var(--dshlg-brand-tone, 77, 107, 254),
+      calc(var(--dshlg-brand-a, 0.2) * 0.8)),
+    0 4px 18px rgba(0, 0, 0, 0.18) !important;
+  backdrop-filter: var(--dshlg-brand-filter, none);
+  -webkit-backdrop-filter: var(--dshlg-brand-filter, none);
+  margin: 2px 4px 6px !important;
+  padding: 4px 8px !important;
+  transition: box-shadow .3s cubic-bezier(.4, 0, .2, 1),
+    background-color .3s cubic-bezier(.4, 0, .2, 1);
+}
+#root .dshlg-brand:hover {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, calc(var(--dshlg-topline, 0.3) * 1.9)),
+    inset 0 0 16px rgba(var(--dshlg-brand-tone, 77, 107, 254),
+      calc(var(--dshlg-brand-a, 0.2) * 1.2)),
+    0 6px 22px rgba(0, 0, 0, 0.22) !important;
+}
+
+/* 品牌文字：蓝白渐变填充（不引入新字体、不改字重） */
+#root .dshlg-brand [class*="_brandName"],
+#root .dshlg-brand [class*="_fallbackBrandName"],
+#root .dshlg-brand [class*="_localBuildTitle"] {
+  /* 只写 background-image：background 简写会把品牌行的 background-color
+     一起重置，渐变丢失 → 文字退回灰白（实测踩过）。 */
+  background-image: linear-gradient(96deg,
+    #ffffff 0%, #bfdbfe 30%, #60a5fa 62%, #2563eb 100%) !important;
+  background-color: transparent !important;
+  -webkit-background-clip: text !important;
+  background-clip: text !important;
+  -webkit-text-fill-color: transparent !important;
+  color: rgb(var(--dshlg-brand-tone, 147, 197, 253));
+  font-weight: 700 !important;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.55));
+}
+/* 标（logo / 图标）：drop-shadow 上蓝，不动 SVG 结构 */
+#root .dshlg-brand [class*="_brandMark"] {
+  filter: drop-shadow(0 0 6px rgba(var(--dshlg-brand-tone, 77, 107, 254),
+    calc(var(--dshlg-brand-a, 0.2) * 1.8)));
+}
+/* 图标上蓝：DSH 的 SVG 可能是 currentColor，也可能是写死的白 ——
+   直接递归改 fill/color，并加一层蓝色投影，保证任何结构都变蓝。 */
+#root .dshlg-brand [class*="_brandMark"] svg,
+#root .dshlg-brand [class*="_brandMark"] svg *,
+#root .dshlg-brand [class*="_brandName"] svg,
+#root .dshlg-brand [class*="_brandName"] svg * {
+  color: rgb(var(--dshlg-brand-ink, 30, 64, 175)) !important;
+  fill: url(#dshlg-sapphire) !important;
+}
+#root .dshlg-brand [class*="_brandMark"] {
+  filter: drop-shadow(0 1px 1px rgba(255, 255, 255, 0.6));
+}
+/* 品牌字加一层深色描影：浅色壁纸上蓝字容易飘，描影把它压住 */
+#root .dshlg-brand [class*="_brandName"],
+#root .dshlg-brand [class*="_fallbackBrandName"],
+#root .dshlg-brand [class*="_localBuildTitle"] {
+  filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.55));
+}
+
+/* 品牌旁边那块「白块」：它本来是写死的实底色，收干净让它跟玻璃走 */
+#root [data-dshlg-flat] {
+  background-color: transparent !important;
+  background-image: none !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
+#root [data-dshlg-flat]:hover {
+  background-color: rgba(255, 255, 255, 0.08) !important;
+}
+#root [data-dshlg-flat] svg { color: var(--dsw-alias-label-secondary, inherit) !important; }
+
+/* 收起 / 中栏：这些附加面也一并干净 */
+#root [data-dshlg-region="middle"] .dshlg-bar,
+#root [data-dshlg-region="middle"] .dshlg-brand,
+#root [data-dshlg-region="right"][data-dshlg-closed] .dshlg-bar,
+#root [data-dshlg-region="right"][data-dshlg-closed] .dshlg-brand {
+  background-color: transparent !important;
+  background-image: none !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+/* 降级：减少透明度时，行与品牌也用实色，别留半透明的花边 */
+@media (prefers-reduced-transparency: reduce) {
+  #root .dshlg-bar {
+    background-color: rgba(var(--dshlg-tone, 255, 255, 255), 0.06) !important;
+    border-color: rgba(255, 255, 255, 0.12) !important;
+  }
+  #root .dshlg-brand {
+    background-color: rgba(var(--dshlg-brand-tone, 77, 107, 254), 0.55) !important;
+    background-image: none !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+  }
+}
