@@ -1780,6 +1780,23 @@ body[data-ds-dark-theme] #dshlg-fade-bottom {
   #dshlg-fade-top, #dshlg-fade-bottom { display: none; }
 }
 
+
+/* ══ P0-1 对话区衬底 ═══════════════════════════════════════════
+   全透明档下正文直接压在壁纸上，亮壁纸读不出来（实测纯白壁纸 1.41:1）。
+   这条规则的特异性 (1,1,0) 高于清底规则 #root * (1,0,0)，
+   所以衬底**真的生效**（之前那套被 !important 压死，等于从未生效）。
+   颜色由 JS 按实测壁纸亮度写到 --dshlg-content-veil：
+   亮背景→黑纱，暗背景→几乎不加。 */
+#root [data-conversation-scroll],
+#root [data-conversation-region] {
+  background-color: var(--dshlg-content-veil, rgba(0, 0, 0, 0.22)) !important;
+}
+/* 用户可在设置面板里手动指定压暗强度；>0 时以手动值为准 */
+:root[data-dshlg-veil-manual] #root [data-conversation-scroll],
+:root[data-dshlg-veil-manual] #root [data-conversation-region] {
+  background-color: rgba(0, 0, 0, var(--dshlg-veil-manual)) !important;
+}
+
 /* ══ 可读性：正文 1px 描影（借鉴 Aqua）════════════════════════
    全透明背景下文字边缘直接贴着壁纸，容易糊边。
    1px 描影把字边缘的背景压住一点，是最省事的可读性提升。 */
@@ -2327,6 +2344,9 @@ ${glassVars(theme, modal.alpha, modal.frost, cardRefract)}
   font-weight: 600;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
 }
+#${SETTINGS_ID} .range { display: inline-flex; align-items: center; gap: 8px; flex: 1; min-width: 0; }
+#${SETTINGS_ID} .range input[type='range'] { flex: 1; min-width: 0; accent-color: #93c5fd; cursor: pointer; }
+#${SETTINGS_ID} .range b { font-weight: 600; opacity: 0.85; min-width: 2.6em; text-align: right; }
 #${SETTINGS_ID} input[type='text'] {
   flex: 1;
   min-width: 0;
@@ -2785,6 +2805,8 @@ ${glassVars(theme, modal.alpha, modal.frost, cardRefract)}
         options: [['0', '无底'], ['0.2', '淡'], ['0.42', '明显']] },
       { key: 'barAvoid', label: '控制条让开输入框', type: 'seg',
         options: [['0', '不让开（贴左下）'], ['1', '自动上移']] },
+      { key: 'veilManual', label: '正文衬底', type: 'range', min: 0, max: 0.7, step: 0.05 },
+      { key: 'wallpaperDim', label: '壁纸压暗', type: 'range', min: 0, max: 0.8, step: 0.05 },
       { key: 'controls', label: '显示壁纸控制条', type: 'seg',
         options: [['1', '显示'], ['0', '隐藏']] },
     ];
@@ -2820,6 +2842,18 @@ ${glassVars(theme, modal.alpha, modal.frost, cardRefract)}
         }
         if (typeof st.barAvoid !== 'undefined') CONFIG.wallpaper.avoidComposer = String(st.barAvoid) === '1';
         if (typeof st.controls !== 'undefined') CONFIG.wallpaper.controls = String(st.controls) === '1';
+        /* 正文衬底：手动值 > 0 时接管自动派生 */
+        const vm = st.veilManual;
+        if (vm !== undefined && vm !== '' && Number(vm) > 0) {
+          document.documentElement.dataset.dshlgVeilManual = '1';
+          document.documentElement.style.setProperty('--dshlg-veil-manual', String(Number(vm)));
+        } else {
+          delete document.documentElement.dataset.dshlgVeilManual;
+        }
+        /* 壁纸压暗：手动设过就用它，否则由亮度自动派生 */
+        if (st.wallpaperDim !== undefined && st.wallpaperDim !== '') {
+          CONFIG.wallpaper.dim = Number(st.wallpaperDim);
+        }
       } catch (error) {
         console.warn('[dsh-liquid-glass] 应用设置失败：', error);
       }
@@ -2835,6 +2869,8 @@ ${glassVars(theme, modal.alpha, modal.frost, cardRefract)}
         brandAlpha: String(st.brandAlpha ?? (CONFIG.brand && CONFIG.brand.alpha) ?? 0),
         barAvoid: String(st.barAvoid ?? (CONFIG.wallpaper.avoidComposer ? '1' : '0')),
         controls: String(st.controls ?? (CONFIG.wallpaper.controls ? '1' : '0')),
+        veilManual: String(st.veilManual ?? ''),
+        wallpaperDim: String(st.wallpaperDim ?? CONFIG.wallpaper.dim ?? 0.15),
       };
     }
 
@@ -2912,6 +2948,11 @@ ${glassVars(theme, modal.alpha, modal.frost, cardRefract)}
         });
         panel.addEventListener('input', (event) => {
           const input = event.target;
+          if (input && input.dataset && input.dataset.setRange) {
+            /* 滑块：即时生效、且不重绘面板（否则拖动会被打断） */
+            commitSetting(input.dataset.setRange, input.value, true);
+            return;
+          }
           if (input && input.dataset && input.dataset.setText) {
             commitSetting(input.dataset.setText, input.value, true);
           }
@@ -2952,6 +2993,25 @@ ${glassVars(theme, modal.alpha, modal.frost, cardRefract)}
         label.textContent = spec.label;
         row.appendChild(label);
 
+        if (spec.type === 'range') {
+          const wrap = document.createElement('span');
+          wrap.className = 'range';
+          const input = document.createElement('input');
+          input.type = 'range';
+          input.min = String(spec.min);
+          input.max = String(spec.max);
+          input.step = String(spec.step);
+          input.value = String(cur[spec.key] ?? spec.min);
+          input.dataset.setRange = spec.key;
+          const out = document.createElement('b');
+          out.textContent = Number(input.value).toFixed(2);
+          input.addEventListener('input', () => { out.textContent = Number(input.value).toFixed(2); });
+          wrap.appendChild(input);
+          wrap.appendChild(out);
+          row.appendChild(wrap);
+          rows.appendChild(row);
+          continue;
+        }
         if (spec.type === 'seg') {
           const seg = document.createElement('span');
           seg.className = 'seg';
@@ -3111,6 +3171,78 @@ ${glassVars(theme, modal.alpha, modal.frost, cardRefract)}
         event.stopPropagation();
         event.preventDefault();
       }, true);
+    }
+
+
+    /* ── 壁纸亮度测量（P0-1）─────────────────────────────────
+       为什么要测：全透明档下正文直接压在壁纸上。亮壁纸上白字读不出来
+       （实测纯白壁纸只有 1.41:1）。所以衬底要按**背景明暗**派生：
+       亮 → 黑纱，暗 → 几乎不加。
+       数据来源：宿主 /__preview?id=<壁纸> 的缩略图（index.js 带 ACAO:*，
+       所以 canvas 能读像素）。读不到就退回中性假设。 */
+    const wallLum = { value: null, id: null };
+
+    /**
+     * 用壁纸缩略图估平均亮度（sRGB 相对亮度，0=黑 1=白）。
+     * @param {number} port 宿主端口
+     * @param {string} id 壁纸 id
+     * @returns {Promise<number|null>}
+     */
+    function measureWallpaperLuminance(port, id) {
+      if (!port || !id) return Promise.resolve(null);
+      if (wallLum.id === id && wallLum.value !== null) return Promise.resolve(wallLum.value);
+      return new Promise((resolve) => {
+        const img = new Image();
+        img.crossOrigin = 'anonymous';
+        const done = (v) => { wallLum.id = id; wallLum.value = v; resolve(v); };
+        const fail = () => resolve(null);
+        img.onload = () => {
+          try {
+            const cv = document.createElement('canvas');
+            const w = (cv.width = 32);
+            const h = (cv.height = 32);
+            const ctx = cv.getContext('2d', { willReadFrequently: true });
+            if (!ctx) return fail();
+            ctx.drawImage(img, 0, 0, w, h);
+            const d = ctx.getImageData(0, 0, w, h).data;
+            let sum = 0;
+            let n = 0;
+            const f = (v) => { const x = v / 255; return x <= 0.03928 ? x / 12.92 : Math.pow((x + 0.055) / 1.055, 2.4); };
+            for (let i = 0; i < d.length; i += 4) {
+              if (d[i + 3] < 8) continue;
+              sum += 0.2126 * f(d[i]) + 0.7152 * f(d[i + 1]) + 0.0722 * f(d[i + 2]);
+              n += 1;
+            }
+            done(n ? sum / n : null);
+          } catch {
+            /* canvas 被污染（CORS 没生效）→ 退回中性 */
+            fail();
+          }
+        };
+        img.onerror = fail;
+        img.src = 'http://127.0.0.1:' + port + '/__preview?id=' + encodeURIComponent(id);
+      });
+    }
+
+    /**
+     * 依据测得亮度决定「对话区衬底」。
+     *
+     * 亮背景 → 黑纱（压住壁纸，白字才读得出）；暗背景 → 极淡或无。
+     * 测不到时用中性 0.18 的纱（比恒白安全：白纱遇到亮壁纸等于没加）。
+     */
+    function applyContentVeil() {
+      const L = wallLum.value;
+      let veil;
+      if (L === null) veil = 'rgba(0, 0, 0, 0.22)';
+      else if (L > 0.62) veil = 'rgba(0, 0, 0, 0.42)';      // 亮壁纸：重压
+      else if (L > 0.45) veil = 'rgba(0, 0, 0, 0.3)';
+      else if (L > 0.28) veil = 'rgba(0, 0, 0, 0.16)';
+      else veil = 'rgba(0, 0, 0, 0.04)';                     // 暗壁纸：几乎不加
+      try {
+        document.documentElement.style.setProperty('--dshlg-content-veil', veil);
+        document.documentElement.dataset.dshlgWallLum = L === null ? 'unknown' : L.toFixed(2);
+      } catch { /* 忽略 */ }
+      return veil;
     }
 
     /* ── 面板可读性自适应 ─────────────────────────────────────── */
@@ -4243,6 +4375,23 @@ const paintBrand = (column, put) => {
           ensureFades();
           /* 自制 UI 的维护：任何一处出错都不能中断整轮 pass ——
              否则会连带「样式没应用」「画廊不出现」这类看起来毫不相关的故障。 */
+          /* P0-1：测壁纸亮度（异步，测到后自动定衬底与压暗） */
+          try {
+            const curId = (CONFIG.wallpaper && (CONFIG.wallpaper.currentId || CONFIG.wallpaper.entry)) || null;
+            if (wallPort && curId && wallLum.id !== curId) {
+              measureWallpaperLuminance(wallPort, curId)
+                .then((L) => {
+                  applyContentVeil();
+                  /* 没手动压暗过 → 按亮度自动定一个安全值 */
+                  if (!loadSettings().wallpaperDim && L !== null) {
+                    CONFIG.wallpaper.dim = L > 0.62 ? 0.4 : L > 0.45 ? 0.28 : L > 0.28 ? 0.15 : 0.05;
+                  }
+                  requestPass(true);
+                })
+                .catch(() => { /* 测不到就用默认衬底 */ });
+            }
+            applyContentVeil();
+          } catch { /* 忽略 */ }
           try { ensureSettingsUI(); positionGear(); } catch (error) {
             console.warn('[dsh-liquid-glass] 自制 UI 维护失败：', error);
           }
