@@ -11,13 +11,19 @@ import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 
 const PROFILE = join(homedir(), '.dsh', 'profiles', 'desktop');
-const PKG_NAME = '@local/dsh-liquid-glass';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 
 /* 插件根目录：默认取脚本上一级（test/ 的父目录），可用 DSHLG_ROOT 覆盖。
    这样别人 clone 到任意路径都能直接跑，不再依赖某台机器的绝对路径。 */
 const PLUGIN = process.env.DSHLG_ROOT || join(dirname(fileURLToPath(import.meta.url)), '..');
+/* 包名从插件自己的 package.json 读 —— 2026-09-28 仓库改名时这里是硬编码常量，
+   改完名就得记得同步，容易漏。读文件就不会漏。 */
+const PKG_NAME = (() => {
+  try {
+    return JSON.parse(readFileSync(join(PLUGIN, 'package.json'), 'utf8')).name || '@local/dsh-liquid-glass';
+  } catch { return '@local/dsh-liquid-glass'; }
+})();
 /* 临时目录：默认走系统 tmp，可用 DSHLG_TMP 覆盖。 */
 const TMP = process.env.DSHLG_TMP || tmpdir();
 

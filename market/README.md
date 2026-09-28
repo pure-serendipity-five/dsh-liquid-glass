@@ -5,7 +5,7 @@
 | 来源 | URL | 谁维护 |
 |---|---|---|
 | 社区公开清单 | `https://awesome-dsh-plugin.com/plugins.json` | 社区（`github.com/awesome-dsh-plugin/awesome-dsh-plugin`），约 4000+ 个插件，持续更新 |
-| **本文件**（补充清单） | `https://raw.githubusercontent.com/pure-serendipity-five/dsh-liquid-glass/main/market/index.json` | 你自己 |
+| **本文件**（补充清单） | `https://raw.githubusercontent.com/pure-serendipity-five/dsh-liquid-glass-studio/main/market/index.json` | 你自己 |
 
 两个 URL 都写在 `client.js` 的 `MARKET_URLS` 里 —— 想加第三个来源，往那个数组再加一行即可。
 

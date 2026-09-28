@@ -1,6 +1,6 @@
 {
   "name": "我的补充清单",
-  "url": "https://github.com/pure-serendipity-five/dsh-liquid-glass",
+  "url": "https://github.com/pure-serendipity-five/dsh-liquid-glass-studio",
   "updated": "2026-09-27",
   "note": "控制中心「插件」页会把这个文件和社区清单合并显示。字段照抄社区清单的形状即可（见 market/README.md）。plugins 留空 = 不补充任何条目。",
   "categories": {},

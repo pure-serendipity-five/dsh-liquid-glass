@@ -66,6 +66,29 @@
 
 ## 三、安装
 
+### 给别人装（30 秒）
+
+用 DSH 自带的插件管理器即可（左侧栏「插件」，或本插件控制中心的「插件」页）：
+
+```
+包名 / 仓库标识  填：github:pure-serendipity-five/dsh-liquid-glass-studio
+```
+
+命令行等价写法（本机没有 `dsh` CLI 时用上面那个界面即可）：
+
+```bash
+dsh plugin --profile desktop add github:pure-serendipity-five/dsh-liquid-glass-studio
+```
+
+装完**完全退出 DSH**（托盘图标右键 → 退出；关窗口不算退出）再启动才生效。
+
+> 需要 DSH Desktop。壁纸库那部分依赖宿主半体（`index.js`）在 `39321~39324` 上起的本地服务，
+> 插件会自动探测；探不到就回落到内置背景层，其余功能照常。
+> 想从社区市场里被搜到：本插件在 [awesome-dsh-plugin](https://awesome-dsh-plugin.com) 的
+> 清单里也可查（按名字 `dsh-liquid-glass-studio`）。
+
+### 我自己的开发环境（junction）
+
 插件目录已通过 junction 挂在 profile 里，**改源目录 = 改生效文件**：
 
 ```
@@ -80,8 +103,9 @@
 
 | 改了什么 | 怎么生效 |
 |---|---|
-| `client.js` / `styles.css` | **重启 DSH**（插件树与客户端半体都在启动时装配） |
-| 想确认状态 | 重启后看左下角有没有壁纸控制条；或把 `CONFIG.report` 改回 `true` 看右下角横幅 |
+| `client.js` / `styles.css` | **按 F5 刷新**即可（客户端半体走 HTTP，每次刷新重取） |
+| `index.js`（宿主半体） | **必须完全退出 DSH 再启动**（托盘图标右键 → 退出；关窗口不算） |
+| 想确认状态 | 控制中心 →「系统」页；或看左下角有没有壁纸控制条 |
 
 ---
 

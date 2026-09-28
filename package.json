@@ -1,6 +1,6 @@
 {
   "name": "@local/dsh-liquid-glass",
-  "version": "2.5.2",
+  "version": "2.6.0",
   "private": true,
   "type": "module",
   "description": "DSH 液态玻璃主题 + 壁纸库（Liquid glass theme & wallpaper gallery for DeepSeek Harness）",
@@ -32,11 +32,11 @@
   "author": "pure-serendipity-five",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/pure-serendipity-five/dsh-liquid-glass.git"
+    "url": "git+https://github.com/pure-serendipity-five/dsh-liquid-glass-studio.git"
   },
-  "homepage": "https://github.com/pure-serendipity-five/dsh-liquid-glass#readme",
+  "homepage": "https://github.com/pure-serendipity-five/dsh-liquid-glass-studio#readme",
   "bugs": {
-    "url": "https://github.com/pure-serendipity-five/dsh-liquid-glass/issues"
+    "url": "https://github.com/pure-serendipity-five/dsh-liquid-glass-studio/issues"
   },
   "keywords": [
     "dsh",

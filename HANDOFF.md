@@ -11,7 +11,7 @@
 |---|---|
 | 项目 | **DSH 液态玻璃主题 + 壁纸库**（DeepSeek Harness 的客户端插件） |
 | 本机路径 | `D:\AI应用\dsh-liquid-glass` |
-| GitHub | https://github.com/pure-serendipity-five/dsh-liquid-glass （公开，账号 `pure-serendipity-five`，`gh` 已登录） |
+| GitHub | **https://github.com/pure-serendipity-five/dsh-liquid-glass-studio** （公开，账号 `pure-serendipity-five`，`gh` 已登录）。**2026-09-28 由 `dsh-liquid-glass` 改名**：原名被 `Ultronen/dsh-liquid-glass` 占了（同名、已发 npm、3★），旧地址 GitHub 会自动跳转 |
 | 结构 | `client.js`（客户端半体，~6000 行，内联 CSS 在 `CRITICAL_CSS` + `buildControlsCss`）/ `index.js`（宿主半体，Node，本地 HTTP 服务 39321-39324）/ `styles.css`（**真机上取不到**，关键规则都内联）/ `test/` / `review/`（6 份专家报告） |
 | 用户 | **发动机台架标定工程师，非程序员**；习惯双击 `.bat`；中文沟通；**结论先行**；遇到问题会**截图**发来 |
 
