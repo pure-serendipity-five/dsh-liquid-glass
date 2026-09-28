@@ -319,6 +319,9 @@ t('⑤ 页签真的切到「系统」', s.tab === '系统', '当前页签=' + s.
 t('⑤ 系统页显示服务清单', /服务/.test(s.text) && /workspaces/.test(s.text), '正文=' + JSON.stringify(s.text.slice(0, 120)));
 t('⑤ 系统页显示「不可用服务」与「接口载体」', /不可用服务/.test(s.text) && /接口载体/.test(s.text) && /无/.test(s.text));
 t('⑤ 系统页没有渲染成错误边界', !/这个分页出错了/.test(s.text));
+t('⑤ 系统页有「壁纸诊断」：给出壁纸层矩形 + 遮挡扫描 + 令牌',
+  /壁纸诊断/.test(s.text) && /"wall"/.test(s.text) && /"covering"/.test(s.text) && /dsw-alias-bg-base/.test(s.text),
+  '片段=' + JSON.stringify(s.text.slice(0, 60)));
 
 /* ⑥ 关闭按钮 */
 await evaluate('window.__CLICKS = []');
