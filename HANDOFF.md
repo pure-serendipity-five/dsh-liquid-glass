@@ -179,8 +179,50 @@ controlJson(res, 200, { ok: true, version, currentCwd, count: workspaces.length,
 
 ---
 
+## 二·补3 · 插件市场（控制中心「插件」页，v1.10.0 新增）
+
+用户要「一个能下载插件的地方」。**这一页只负责找和复制，不替你装。**
+
+| 事实 | 值 |
+|---|---|
+| 社区公开清单 | \`https://awesome-dsh-plugin.com/plugins.json\` —— 4000+ 插件、23 分类、中英说明、star/下载量、**权限能力与红线警告**、现成的 install 命令。实测 \`ACAO: *\`（页面能直接拉）、**5.25 MB** |
+| 自己的补充清单 | \`market/index.json\`（本仓库）+ \`market/README.md\` 写了字段格式。控中心把两份合并去重 |
+| 官方安装器 | \`@deepseek-ai/dsh-client-ui-plugin-manager\`（左侧栏「插件」）+ 宿主 \`dsh-plugin-manager\`：在 profile 里跑 pnpm，带**供应链校验 + 授权确认 + 风险提示**，日志在 \`profile\\.plugin-manager\\logs\\operation-*\\pnpm.log\` |
+| 没有的东西 | 没有 \`dsh\` 命令行（纯 Electron 安装，\`runtime\\bin\` 只有 node/pnpm 的 shim）；没有「调起插件管理器并预填」的接口（查过 app.asar）→ 所以只能「复制标识 + 让用户粘」 |
+
+### 三条设计约束（都是查证过的，不是拍脑袋）
+1. **不自己实现安装**：自己跑 pnpm = 重复实现一条安全关键路径，还绕开官方三道校验；
+   装错了 profile 起不来 = DSH 直接打不开。所以「安装」按钮 = 复制安装标识 +
+   打开官方插件管理器（\`ccOpenPluginManager()\`：按文字「插件」找左侧栏入口并 click，
+   找不到就给人话提示，绝不硬点别的元素）。
+2. **清单不自己维护**：社区那份 4000+ 条且持续更新，自己维护只会过期。
+   本仓库那份只放社区没有的（自研/私藏/内网包）。
+3. **5MB 不静默拉**：第一次要用户点「加载清单」，之后 24h 走 localStorage 缓存；
+   缓存存**精简字段**（4377 条全字段塞不进配额，精简后约 1MB），配额满了就只留内存。
+
+### 实现要点（改这段代码前先看）
+- 清单 URL 在 \`client.js\` 的 \`MARKET_URLS\`；缓存键 \`dshlg-market-v1\`；一次渲染 \`MARKET_PAGE=40\` 条
+  （4000+ 条全渲染会把 DOM 拖死），筛选/排序在 \`ccMarketFiltered()\`。
+- 安装标识 = 清单 \`install\` 字段里 \`add\` **后面那一段**（官方管理器「包名」框要的就是它）：
+  \`dsh plugin --profile web add github:CAI-MH/dsh-quality-review\` → \`github:CAI-MH/dsh-quality-review\`。
+- 搜索框走 \`input\` 事件 + **防抖 250ms**；重绘会重建 input（焦点会丢），
+  所以 \`ccMarketSearch()\` 里重绘后要把**焦点与光标位置还回去**（踩过：打一个字就得重新点）。
+- 市场状态进了 \`ccSig()\`（清单/筛选/搜索任何一项变了都要重绘）。
+- 权限红线（\`capabilityRedLines\`）直接标红展示，不藏 —— 市场页有义务告诉用户「它要什么权限」。
+
+### 这一轮新踩的坑
+**\`<button>\` 不继承 \`color\`**：\`.cc-chip\` 原本只用在 \`<span>\` 上（span 继承面板的浅字），
+改成 \`<button class="cc-chip">\` 之后吃 UA 的 \`color: buttontext\`（近黑）→
+深色玻璃面板上变成「一排空胶囊」。**预览图里一眼就看出来了**（\`tools/style-preview.mjs\` 出的
+\`preview-6-market.png\`）—— 这就是为什么材质/新界面改完要先出图看一眼，别只看测试绿不绿。
+
+---
+
 ## 三、剩下要做的
 
+0. **插件市场（v1.10.0）后续可选**：① 宿主只读接口 → 「已装 / 版本 / 有更新」标记；
+   ② 真·一键安装（要考虑绕开官方授权校验的代价，见二·补3）。
+   两件都要改 `index.js`（= 必须完全退出 DSH 才能验）。
 1. **壁纸控制条闪烁**（唯一剩下的旧问题）。
    已修的确切热源：`positionGear()` 每轮 `pass()` **无条件写** `gear.style.left/bottom`，
    即使值没变也标记 dirty → 重绘（已改成 `setGearPos()` 判重后再写，提交 `1e33d11`）。
@@ -249,6 +291,7 @@ fetch('http://127.0.0.1:39321/dshlg-control/workspaces').then(r=>r.json()).then(
 | **提交信息里带双引号** | PowerShell 把消息截断成 pathspec → 用 `git commit -F 消息文件` |
 | **顺手做"安全加固"** | 把 CORS 从 `ACAO:*` 收紧成白名单 → **壁纸全挂**（界面来源是自定义协议）→ 别在修功能时顺手加固 |
 | **锚点手打**（多行块） | 空白漂移（6/7 空格、8/10 空格、中间夹注释）→ **锚点一律从目标文件里读出来用** |
+| **`<button>` 不继承 `color`** | `.cc-chip` 只在 `<span>` 上用过（span 继承浅字）；改成按钮后吃 UA 的 `color: buttontext`（近黑）→ 深色面板上一排**空胶囊**。按钮类规则要显式 `color: inherit` |
 | **CSS 注释里写反引号** | 截断外层模板字符串 → `SyntaxError`。**2026-09-27 那一轮又犯了两次**，都是 `test/scanbt2.mjs` 当场抓住的 → **改完 CSS 立刻跑它** |
 | **改动「没反应」先算特异性** | 动态样式里有 `#root, #root *:not(...) { background-color: transparent !important }`（**(0,4,0)**），会清掉 `#root` 内一切底色；DSH 的 portal 菜单在 `#root` 外才躲得过。改别人界面先用 `scan-asar*.mjs` 挖真身，再算特异性 |
 | **测试用合成 click**（`el.click()`） | 合成 click **不产生 `pointerdown`** → 测不出 `setPointerCapture` 把 click 的 target 重定向的问题 → **测试全绿、真机全死**（控制中心为此卡了两轮）。「点不动」类问题必须用 `Input.dispatchMouseEvent` 发**真实鼠标事件**（见 `test/cc-click.test.mjs`） |

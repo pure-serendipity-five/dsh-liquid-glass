@@ -217,6 +217,75 @@ await shot('preview-3-dsh-settings-overlay.png');
 console.log('  DSH 浮层面板 material = ' + await ev(`(()=>{const p=document.querySelector('.y7bFDa_panel');
   const c=getComputedStyle(p); return c.backgroundColor+' / '+c.color;})()`));
 
+/* ── 插件市场：先喂一份假清单（结构照抄社区清单 plugins.json 的真实形状）── */
+await ev(`document.getElementById('mock-settings')?.classList.remove('is-on')`);
+await ev(`(() => {
+  const p = (o) => Object.assign({ owner:'', url:'', page:'', category:'ui', npm:null, version:null,
+    stars:0, downloads:null, capabilities:[], capabilityRedLines:[], added:'2026-09-20' }, o);
+  window.__MKT = { name:'awesome-dsh-plugin', count:6, updated:'2026-09-27',
+    categories:{ ui:{zh:'UI 增强'}, dev:{zh:'开发与运行时'}, fun:{zh:'娱乐'} },
+    plugins:[
+      p({ name:'dsh-status-rotator', owner:'01Virex', url:'https://github.com/01Virex/dsh-status-rotator',
+          page:'https://awesome-dsh-plugin.com/p/01Virex/dsh-status-rotator/', npm:'dsh-status-rotator',
+          version:'0.27.4', stars:92, downloads:8006, capabilities:['fs-read','network'],
+          install:'dsh plugin --profile web add dsh-status-rotator',
+          description:{ zh:'把回合状态行换成 1059 条中英文案的轮播：打字机输出、流动彩虹渐变、弹幕、12 个可开关的主题词库包。' } }),
+      p({ name:'dsh-better-sidebar', owner:'omdsh-dev', url:'https://github.com/omdsh-dev/DSH-better-sidebar',
+          page:'https://awesome-dsh-plugin.com/p/omdsh-dev/DSH-better-sidebar/', npm:'dsh-better-sidebar',
+          version:'0.21.1', stars:41, downloads:3120, capabilities:['fs-write','fs-read'],
+          install:'dsh plugin --profile web add dsh-better-sidebar',
+          description:{ zh:'侧栏增强：文件树、编辑器、变更、任务与会话内聊天合成一列，每个会话各自独立。' } }),
+      p({ name:'dsh-screen-translator', owner:'mustakimabdullah25-tech',
+          url:'https://github.com/mustakimabdullah25-tech/dsh-screen-translator', category:'ui',
+          npm:'dsh-screen-translator', version:'3.0.3', stars:18, downloads:2044, capabilities:['network'],
+          install:'dsh plugin --profile web add dsh-screen-translator',
+          description:{ zh:'屏幕取词翻译：界面文字、属性、Shadow DOM 与 iframe 全覆盖，45+ 语言。' } }),
+      p({ name:'dsh-quick-open', owner:'asxiuxiu', url:'https://github.com/asxiuxiu/dsh-quick-open',
+          category:'dev', npm:'dsh-quick-open', version:'0.3.0', stars:0, downloads:592,
+          capabilities:['fs-write','fs-read','network'], install:'dsh plugin --profile web add dsh-quick-open',
+          description:{ zh:'Ctrl+P 快速打开：给会话工作区建内存索引，5.1 万条目、查询中位数 5ms。' } }),
+      p({ name:'dsh-WallpaperAndCost', owner:'AppliedYuu', url:'https://github.com/AppliedYuu/dsh-WallpaperAndCost',
+          page:'https://awesome-dsh-plugin.com/p/AppliedYuu/dsh-WallpaperAndCost/', category:'fun',
+          stars:3, capabilities:['credentials','network'],
+          capabilityRedLines:['reads credentials/secrets AND has network access'],
+          install:'dsh plugin --profile web add github:AppliedYuu/dsh-WallpaperAndCost',
+          description:{ zh:'壁纸定制＋Steam 创意工坊壁纸提取＋余额用量小组件。API key 由 host 从凭据库读取，不入源码。' } }),
+      p({ name:'dsh-linghun', owner:'syyr1987', url:'https://github.com/syyr1987/dsh-linghun', category:'fun',
+          npm:'dsh-linghun', version:'0.2.0', stars:2, downloads:416, capabilities:['fs-write','fs-read'],
+          install:'dsh plugin --profile web add dsh-linghun',
+          description:{ zh:'判断内核：认知循环让判断有来处，海马体把运行经历沉淀为可复用知识，人格卡可自定义。' } }),
+    ] };
+  const real = window.fetch.bind(window);
+  window.fetch = (input, init) => {
+    const url = String(typeof input === 'string' ? input : ((input && input.url) || ''));
+    if (/awesome-dsh-plugin\\.com\\/plugins\\.json/.test(url)) {
+      return Promise.resolve(new Response(JSON.stringify(window.__MKT),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    }
+    /* 第二条来源（自己仓库里的补充清单）也要拦 —— 不拦就会走真网络，
+       预览会卡在「正在加载」，看起来像功能坏了（踩过一次）。 */
+    if (/raw\\.githubusercontent\\.com.*market\\/index\\.json/.test(url)) {
+      return Promise.resolve(new Response(JSON.stringify({ plugins: [] }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    }
+    return real(input, init);
+  };
+  return true;
+})()`);
+
+await realClick('[data-role="control-center"]');            // 重新打开控制中心
+await sleep(600);
+await realClick('#dshlg-cc .cc-tabs button:nth-child(3)');   // 「插件」页签
+await sleep(500);
+await shot('preview-5-market-empty.png');                    // 首次进入：先给「加载清单」按钮
+await realClick('#dshlg-cc [data-cc-act="mk-load"]');
+await sleep(1000);
+await shot('preview-6-market.png');                          // 清单加载后的市场
+console.log('  市场正文：' + await ev(`(()=>{const b=document.querySelector('#dshlg-cc .cc-body');
+  return (b?b.textContent:'').slice(0, 100);})()`));
+await realClick('#dshlg-cc [data-cc-act="close"]');
+await sleep(300);
+
 /* 浮层菜单（头像菜单：设置 / 意见反馈 / 退出登录）。
    ⚠️ 两处必须照抄真身，否则预览会骗人：
      ① 菜单是 portal 到 **body** 的（不在 #root 里）；

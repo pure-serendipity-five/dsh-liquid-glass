@@ -51,6 +51,46 @@ const FAKE = {
       sessions: [{ id: 's-1', severity: 'ok', title: '回归会话标题' }],
     },
   },
+  /* 插件市场样本：字段照抄社区清单 https://awesome-dsh-plugin.com/plugins.json 的真实形状
+     （含 categories / description.zh / install / capabilities / capabilityRedLines）。
+     数量压到 3 条，只验渲染与筛选逻辑，不去打真网络。 */
+  market: {
+    name: 'awesome-dsh-plugin', count: 3, updated: '2026-09-27',
+    categories: { ui: { en: 'UI Enhancements', zh: 'UI 增强' }, fun: { en: 'Just for Fun', zh: '娱乐' } },
+    plugins: [
+      {
+        name: 'dsh-status-rotator', owner: '01Virex',
+        url: 'https://github.com/01Virex/dsh-status-rotator',
+        page: 'https://awesome-dsh-plugin.com/p/01Virex/dsh-status-rotator/',
+        category: 'ui',
+        description: { en: 'Rotates the turn-status label.', zh: '把回合状态行换成轮播文案。' },
+        npm: 'dsh-status-rotator', version: '0.27.4', stars: 92, downloads: 8006,
+        capabilities: ['fs-read', 'network'], capabilityRedLines: [],
+        install: 'dsh plugin --profile web add dsh-status-rotator', added: '2026-08-14',
+      },
+      {
+        name: 'dsh-quality-review', owner: 'CAI-MH',
+        url: 'https://github.com/CAI-MH/dsh-quality-review',
+        page: 'https://awesome-dsh-plugin.com/p/CAI-MH/dsh-quality-review/',
+        category: 'fun',
+        description: { en: 'Review each turn.', zh: '每轮回复结束时用独立审查模型审核输出。' },
+        npm: null, version: null, stars: 2, downloads: null,
+        capabilities: ['fs-read', 'llm'], capabilityRedLines: [],
+        install: 'dsh plugin --profile web add github:CAI-MH/dsh-quality-review', added: '2026-09-06',
+      },
+      {
+        name: 'risky-plugin', owner: 'someone',
+        url: 'https://github.com/someone/risky-plugin',
+        page: 'https://awesome-dsh-plugin.com/p/someone/risky-plugin/',
+        category: 'ui',
+        description: { zh: '带权限红线的样本，用来验红线会被标出来。' },
+        npm: null, version: null, stars: 1, downloads: null,
+        capabilities: ['credentials', 'network'],
+        capabilityRedLines: ['reads credentials/secrets AND has network access'],
+        install: 'dsh plugin --profile web add github:someone/risky-plugin', added: '2026-09-20',
+      },
+    ],
+  },
 };
 
 function page() {
@@ -94,6 +134,9 @@ function page() {
     const json = (o) => Promise.resolve(new Response(JSON.stringify(o), { status: 200, headers: { 'Content-Type': 'application/json' } }));
     if (/\\/__alive/.test(url)) return json(window.__FAKE.alive);
     if (/\\/__wallpapers/.test(url)) return json(window.__FAKE.wallpapers);
+    /* 插件市场：拦住社区清单与自建清单两条 URL，喂固定样本（不去打真网络） */
+    if (/awesome-dsh-plugin\\.com\\/plugins\\.json/.test(url)) return json(window.__FAKE.market);
+    if (/raw\\.githubusercontent\\.com.*market\\/index\\.json/.test(url)) return json({ plugins: [] });
     const m = /\\/dshlg-control\\/(.+)$/.exec(url.split('?')[0]);
     if (m) {
       const k = m[1];
@@ -101,6 +144,14 @@ function page() {
     }
     return realFetch(input, init);
   };
+  /* 记下复制到剪贴板的内容 —— 「安装」按钮的核心动作就是这个 */
+  window.__COPIED = [];
+  try {
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: (s) => { window.__COPIED.push(String(s)); return Promise.resolve(); } },
+    });
+  } catch { /* 定义不了就靠执行环境自己的实现 */ }
   /* 记录每一次 click 的真实 target —— 用来直接看清「被重定向到容器」这件事 */
   window.__CLICKS = [];
   document.addEventListener('click', (e) => {
@@ -286,10 +337,61 @@ t('⑦ 关掉后还能重新打开', s.open === true);
 s = await closePanel();
 t('⑦ 再关一次仍然有效', s.hidden === true && s.display === 'none');
 
-/* ⑧ 埋点：正常路径不该记录任何错误 */
+/* ⑧ 插件市场：清单加载 → 渲染 → 搜索 → 安装（复制标识） */
+s = await openPanel();
+t('⑧ 面板已打开（准备验插件市场）', s.open === true);
+const cTab = await realClick('#dshlg-cc .cc-tabs button:nth-child(3)');
+t('⑧「插件」页签：点击命中它自己', cTab.ok && cTab.reached === true, '命中=' + cTab.hit);
+await sleep(400);
+s = await state();
+t('⑧ 首次进入：给「加载清单」按钮而不是静默拉 5MB',
+  /还没加载插件清单/.test(s.text) && /加载清单/.test(s.text),
+  '正文=' + JSON.stringify(s.text.slice(0, 110)));
+
+const cLoad = await realClick('#dshlg-cc [data-cc-act="mk-load"]');
+t('⑧「加载清单」按钮：点击命中它自己', cLoad.ok && cLoad.reached === true, '命中=' + cLoad.hit);
+await sleep(900);
+s = await state();
+t('⑧ 清单加载后渲染出条目（名称 + 中文说明）',
+  /dsh-status-rotator/.test(s.text) && /轮播文案/.test(s.text),
+  '正文=' + JSON.stringify(s.text.slice(0, 150)));
+t('⑧ 显示总数（共 3 个插件）', /共\s*3\s*个插件/.test(s.text));
+t('⑧ 安装标识取的是清单 install 里 add 后面那一段',
+  /github:CAI-MH\/dsh-quality-review/.test(s.text));
+t('⑧ 权限红线被标出来（安全信息不藏）',
+  /权限红线/.test(s.text) && /reads credentials/.test(s.text));
+t('⑧ 分类用的是清单里的中文名', /UI 增强/.test(s.text) && /娱乐/.test(s.text));
+
+/* 搜索：输入即筛（防抖 250ms），且重绘后不能丢输入 */
+await evaluate(`(() => { const i = document.querySelector('#dshlg-cc [data-cc-search]');
+  i.value = 'risk'; i.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`);
+await sleep(700);
+s = await state();
+t('⑧ 搜索「risk」筛到 1 条（只剩 risky-plugin）',
+  /risky-plugin/.test(s.text) && !/dsh-status-rotator/.test(s.text),
+  '筛选后=' + JSON.stringify(s.text.slice(0, 130)));
+t('⑧ 重绘后搜索框内容还在（没丢输入）',
+  (await evaluate(`(document.querySelector('#dshlg-cc [data-cc-search]') || {}).value`)) === 'risk');
+
+/* 安装：只做「复制标识 + 提示去官方管理器」，不自己跑安装 */
+await evaluate('window.__COPIED = []');
+const cInst = await realClick('#dshlg-cc [data-cc-act="mk-install"]');
+t('⑧「安装」按钮：点击命中它自己', cInst.ok && cInst.reached === true, '命中=' + cInst.hit);
+await sleep(400);
+const copied = await evaluate('JSON.stringify(window.__COPIED)');
+t('⑧ 点「安装」把安装标识复制到了剪贴板',
+  /github:someone\/risky-plugin/.test(String(copied)), '剪贴板=' + copied);
+s = await state();
+t('⑧ 提示说清楚「去官方插件管理器粘 + 装完要完全退出 DSH」',
+  /插件管理器/.test(s.text) && /退出/.test(s.text),
+  '提示=' + JSON.stringify(s.text.slice(0, 180)));
+t('⑧ 市场页没有替我们去跑安装（提示里没有「已安装」这类谎话）',
+  !/已安装成功/.test(s.text));
+
+/* ⑨ 埋点：正常路径不该记录任何错误 */
 const errTrap = await evaluate('JSON.stringify(window.__DSHLG_CC_ERR || null)');
 info('window.__DSHLG_CC_ERR = ' + errTrap);
-t('⑧ 全程没有控制中心内部异常（埋点 count=0）',
+t('⑨ 全程没有控制中心内部异常（埋点 count=0）',
   errTrap === 'null' || (JSON.parse(errTrap).count === 0), String(errTrap));
 
 console.log(bad ? `\n✗ 控制中心真实点击：${bad} 项不通过` : '\n✓ 控制中心真实点击：全部通过');
