@@ -84,8 +84,10 @@ dsh plugin --profile desktop add github:pure-serendipity-five/dsh-liquid-glass-s
 
 > 需要 DSH Desktop。壁纸库那部分依赖宿主半体（`index.js`）在 `39321~39324` 上起的本地服务，
 > 插件会自动探测；探不到就回落到内置背景层，其余功能照常。
-> 想从社区市场里被搜到：本插件在 [awesome-dsh-plugin](https://awesome-dsh-plugin.com) 的
-> 清单里也可查（按名字 `dsh-liquid-glass-studio`）。
+> 已向社区插件市场 [awesome-dsh-plugin](https://awesome-dsh-plugin.com) 提交收录
+> （[PR #6140](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/pull/6140)）：
+> 合并后可在那里按名字 `dsh-liquid-glass-studio` 搜到，并出现在 `dsh-market` 的
+> **「主题」页**（可一键安装 / 切换 / 卸载）。
 
 ### 我自己的开发环境（junction）
 
