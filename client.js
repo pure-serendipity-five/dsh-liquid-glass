@@ -3586,6 +3586,23 @@ body[data-ds-dark-theme] [class*='_scrim'] {
   color: #eaf2ff !important;
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
 }
+/* ══ 设置浮层内部的「模块卡」也要跟着变深（2026-09-29 用户截图指出）══════
+   症状：模型页那张「添加模型提供商」卡片是**白底**，而面板里已被强制浅字
+        → 白底 + 白字 = 字快看不见（截图里那排 tab 几乎读不出来）。
+   真身（从 app.asar 里提取 DSH 自己的 client.js 查到的，不是猜的）：
+        .<hash>_editor { background: var(--dsw-alias-bg-module-platform) }
+   改法用**令牌**而不是去挑类名：凡是用这个令牌的模块卡（设置里不止一处）
+   一次全解决，而且不依赖类名哈希 —— DSH 升级换了哈希也照样生效。 */
+[class*='_overlay'] [class*='_panel'] {
+  --dsw-alias-bg-module-platform: transparent;
+}
+/* 顺带兜底：万一某版把颜色写死（不走令牌），按语义后缀再兜一道。
+   透明之后卡片会「糊」在面板上，所以补一圈极淡描边，让它还看得出是张卡。 */
+[class*='_overlay'] [class*='_panel'] [class*='_editor'] {
+  background: transparent !important;
+  border: 1px solid rgba(255, 255, 255, 0.14) !important;
+  border-radius: 12px !important;
+}
 /* ⚠️ 上面那条会把 DSH **自带浅底**的按钮也刷成白字 → 白底白字（实测踩到：
    「打开配置文件」「查询用量」两个浅底按钮看不见字）。
    这里把面板里的按钮/输入框统一成插件自己那一套（半透明白底 + 浅描边 + 白字），

@@ -61,6 +61,7 @@ const PAGE = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><sty
  .dock{flex:1}
  .mock-composer{border-radius:14px;padding:10px}
  /* DSH 设置浮层的真身类名（从 app.asar 里挖出来的）：哈希 + 语义后缀 */
+ :root { --dsw-radius-lg: 16px; --dsw-alias-bg-module-platform: #ffffff; }
  .y7bFDa_overlay{position:fixed;inset:0;display:none;z-index:50}
  .y7bFDa_overlay.is-on{display:block}
  .y7bFDa_panel{position:absolute;left:22%;top:12%;width:900px;height:620px;padding:18px;
@@ -68,6 +69,11 @@ const PAGE = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><sty
  .y7bFDa_header{display:flex;align-items:center;gap:10px;font-size:18px;font-weight:600}
  .y7bFDa_nav{display:flex;gap:16px;opacity:.85}
  .y7bFDa_content{font-size:14px;line-height:1.9}
+ /* 模型页那张「添加模型提供商」卡的真身：background 吃 --dsw-alias-bg-module-platform。
+    预览里必须照抄这一层，否则又会给出「已经修好了」的假信号（本项目踩过）。 */
+ .e9d1Wa_editor{border-radius:var(--dsw-radius-lg);background:var(--dsw-alias-bg-module-platform);
+   flex-direction:column;gap:14px;padding:14px 16px;display:flex;margin-top:10px}
+ .e9d1Wa_tabs{display:flex;gap:8px;margin-bottom:6px}
  </style></head><body>
  <div id="root"><div class="ZTP-Xa_frame">
   <div class="ZTP-Xa_sidebarCol"><div class="n_2Q3W_root">
@@ -89,6 +95,16 @@ const PAGE = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><sty
    <div class="y7bFDa_content">
      枝星　182******50<br>充值余额　¥98.17<br>赠金余额　暂不可用赠金<br>
      <button>查询用量</button> <button style="background:#111;color:#fff">充值</button>
+     <!-- 模型页那张卡（真身 .<hash>_editor + 令牌 --dsw-alias-bg-module-platform） -->
+     <div class="e9d1Wa_editor">
+       <div class="e9d1Wa_tabs"><button>第三方模型提供商</button><button>自定义模型 API</button></div>
+       <div style="opacity:.8">从内置目录中选择 OpenAI、Anthropic、Kimi 等提供商，填入其 API 密钥即可使用。</div>
+       <div>提供商</div>
+       <select><option>amazon-bedrock</option></select>
+       <div>API 密钥</div>
+       <input type="text" placeholder="输入 API 密钥，或留空使用环境认证">
+       <div style="display:flex;justify-content:flex-end;gap:8px"><button>取消</button><button>保存</button></div>
+     </div>
    </div>
  </div></div>
  <script>
