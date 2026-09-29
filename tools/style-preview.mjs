@@ -232,6 +232,10 @@ await sleep(500);
 await shot('preview-3-dsh-settings-overlay.png');
 console.log('  DSH 浮层面板 material = ' + await ev(`(()=>{const p=document.querySelector('.y7bFDa_panel');
   const c=getComputedStyle(p); return c.backgroundColor+' / '+c.color;})()`));
+/* 原生 <select> 的弹层底色改不动（浏览器画的），只能靠 color-scheme —— 量出来存证 */
+console.log('  设置浮层 color-scheme = ' + await ev(`getComputedStyle(document.querySelector('.y7bFDa_panel')).colorScheme`));
+console.log('  原生 select 的 color-scheme = ' + await ev(`(()=>{const s=document.querySelector('.y7bFDa_panel select');
+  return s ? getComputedStyle(s).colorScheme + ' / option底色=' + getComputedStyle(s.querySelector('option')).backgroundColor : '(没有 select)';})()`));
 
 /* ── 插件市场：先喂一份假清单（结构照抄社区清单 plugins.json 的真实形状）── */
 await ev(`document.getElementById('mock-settings')?.classList.remove('is-on')`);
