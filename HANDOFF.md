@@ -218,8 +218,45 @@ controlJson(res, 200, { ok: true, version, currentCwd, count: workspaces.length,
 
 ---
 
+## 二·补4 · 公开身份：改名 / Release / 社区清单 PR（2026-09-29）
+
+起因：用户问「GitHub 上有人用吗」。实测答案是**没有**：0 star / 0 fork / 0 issue，
+近 14 天 0 浏览 0 克隆，社区清单（4377 条）里查不到 —— 而且发现三条硬障碍，逐条处理了。
+
+| 事项 | 结果 |
+|---|---|
+| **改名** | \`dsh-liquid-glass\` → **\`dsh-liquid-glass-studio\`**。原名被 \`Ultronen/dsh-liquid-glass\` 占了（同名、已发 npm、3★、30 天下载 589），搜这个名字找到的是他；npm 上 \`dsh-liquid-glass\` / \`dsh-theme-liquid-glass\` / \`dsh-liquid-glass-input\` 也都占了。新名在 npm 与社区清单里都查过是空的。旧地址 GitHub 自动跳转 |
+| **topics** | 补了 8 个：\`dsh-plugin\` \`dsh\` \`deepseek-harness\` \`liquid-glass\` \`glassmorphism\` \`theme\` \`wallpaper\` \`client-plugin\`（社区清单的收录条件之一就是要有 \`dsh-plugin\` topic） |
+| **Release** | \`v2.6.0\`（第一个 Release）。版本号同时统一：\`package.json\` 2.5.2 与 \`client.js\` VERSION 1.10.0 **之前是分叉的**，现在两边都是 **2.6.0** |
+| **商店截图** | 仓库根加 \`screenshots.json\`（社区清单约定：1-8 张、路径相对该文件）。声明后市场优先用它，以后换图只推自己仓库 |
+| **社区清单 PR** | **https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/pull/6140** —— 投稿文件是 \`data/plugins/pure-serendipity-five__dsh-liquid-glass-studio.yml\`，分类选 \`theme\`（该档会自动进 dsh-market 的「主题」页，用户能一键安装/切换） |
+
+**投稿条件逐条核对**（来自对方 contributing.md）：\`dsh.bundle\` manifest ✅ /
+仓库满 1 天 ✅（建立 2026-09-27T03:02Z） / 带 \`dsh-plugin\` topic ✅ /
+\`description.en\` 一行、以句号结尾、含冒号要加引号 ✅。
+
+### ⚠️ 刻意没做：没改 package.json 的 \`name\`
+
+它仍是 \`@local/dsh-liquid-glass\`。原因：profile 的 \`dsh.profile.bundles\` +
+\`dependencies\` + \`node_modules\` 里的 junction **都按这个包名登记**，
+改它就得同时改 profile 并**完全重启 DSH** 才验得了 —— 那就不是「不影响本地使用」了。
+对外安装走 \`github:\` 标识，与包名无关。
+**要发 npm 时才需要动它**（步骤：改 \`name\` → 改 profile 的 bundles/dependencies →
+重建 \`node_modules\` 里的 junction → \`check-install.mjs\` 验 → 完全重启 DSH），
+而且别忘了 \`test/check-install.mjs\` 的包名现在是从 package.json 读的（rename 不会漏改）。
+
+### 顺带修的两处文档错误
+- README「生效方式」原来写「改 \`client.js\` 要**重启 DSH**」—— **错的**，
+  客户端半体走 HTTP 每次刷新重取，**F5 即可**；只有 \`index.js\` 才必须完全退出再启动。
+- README 补了「给别人装（30 秒）」，原来那段安装说明是写给自己机器看的
+  （junction + \`%USERPROFILE%\` 路径），陌生人照着装不上。
+
+---
+
 ## 三、剩下要做的
 
+0. **公开分发的后续（可选）**：等社区清单 PR #6140 合并；要发 npm 就得先改包名
+   （步骤见二·补4 的⚠️）；壁纸诊断（系统页）出问题时让用户截图，比猜快。
 0. **插件市场（v1.10.0）后续可选**：① 宿主只读接口 → 「已装 / 版本 / 有更新」标记；
    ② 真·一键安装（要考虑绕开官方授权校验的代价，见二·补3）。
    两件都要改 `index.js`（= 必须完全退出 DSH 才能验）。
